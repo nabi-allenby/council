@@ -55,6 +55,17 @@ docs/            In-depth research and design documentation
 logs/            Generated session reports (gitignored)
 ```
 
+## Worktree Integration
+
+New issues automatically receive an "Open workspace" comment link via the [Worktree](https://worktree.io/) GitHub Action. Clicking it creates an isolated git worktree on your local machine and opens it in your editor.
+
+To use this, install the Worktree daemon locally:
+
+```bash
+cargo install worktree-io
+worktree setup
+```
+
 ## Tests
 
 ```bash

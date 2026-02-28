@@ -39,7 +39,7 @@ impl Default for CouncilConfig {
             rounds: 3,
             model: DEFAULT_MODEL.to_string(),
             tools: HashMap::new(),
-            backend: Backend::Api,
+            backend: Backend::AgentSdk,
         }
     }
 }
@@ -101,8 +101,8 @@ pub fn load_config(agents_dir: &Path) -> Result<CouncilConfig, CouncilError> {
     }
 
     let backend = match raw.backend.as_deref() {
-        Some("api") | None => Backend::Api,
-        Some("agent-sdk") => Backend::AgentSdk,
+        Some("api") => Backend::Api,
+        Some("agent-sdk") | None => Backend::AgentSdk,
         Some(other) => {
             return Err(CouncilError::Validation(format!(
                 "Config 'backend' must be one of ('api', 'agent-sdk'), got: '{}'",

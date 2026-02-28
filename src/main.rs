@@ -35,8 +35,8 @@ struct Cli {
     #[arg(long)]
     tools: Option<String>,
 
-    /// Agent backend: 'api' (direct Anthropic API)
-    #[arg(short, long, value_parser = ["api"])]
+    /// Agent backend: 'agent-sdk' (Claude CLI) or 'api' (direct Anthropic API)
+    #[arg(short, long, value_parser = ["agent-sdk", "api"])]
     backend: Option<String>,
 }
 
@@ -83,6 +83,7 @@ fn main() {
     }
     if let Some(backend) = &cli.backend {
         config.backend = match backend.as_str() {
+            "agent-sdk" => Backend::AgentSdk,
             "api" => Backend::Api,
             _ => {
                 eprintln!("Error: invalid backend '{}'", backend);
@@ -91,7 +92,7 @@ fn main() {
         };
     }
 
-    // API backend requires ANTHROPIC_API_KEY
+    // API backend requires ANTHROPIC_API_KEY; SDK backend uses Claude CLI
     if config.backend == Backend::Api && std::env::var("ANTHROPIC_API_KEY").is_err() {
         eprintln!(
             "Error: ANTHROPIC_API_KEY is not set.\n\

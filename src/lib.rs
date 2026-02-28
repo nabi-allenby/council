@@ -7,4 +7,5 @@ pub mod output;
 pub mod prompt;
 pub mod report;
 pub mod schema;
+pub mod sdk_backend;
 pub mod types;

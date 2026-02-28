@@ -6,6 +6,7 @@ use crate::api_backend::ApiAgent;
 use crate::config::{Backend, CouncilConfig};
 use crate::error::CouncilError;
 use crate::prompt::{discussion_prompt, vote_prompt};
+use crate::sdk_backend::SdkAgent;
 use crate::types::{Session, Turn, Vote};
 
 pub struct Orchestrator {
@@ -40,9 +41,8 @@ impl Orchestrator {
                     agents.insert(role.clone(), Box::new(agent));
                 }
                 Backend::AgentSdk => {
-                    return Err(CouncilError::Validation(
-                        "Agent SDK backend is not yet supported in the Rust port".into(),
-                    ));
+                    let agent = SdkAgent::new(role, &path, &config.model)?;
+                    agents.insert(role.clone(), Box::new(agent));
                 }
             }
         }

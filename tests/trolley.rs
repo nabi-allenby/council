@@ -433,9 +433,9 @@ fn test_rotation_derived_from_session() {
 // ── Backend config tests ──
 
 #[test]
-fn test_config_default_backend_is_api() {
+fn test_config_default_backend_is_agent_sdk() {
     let config = mock_config(3);
-    assert_eq!(config.backend, Backend::Api);
+    assert_eq!(config.backend, Backend::AgentSdk);
 }
 
 #[test]
@@ -461,13 +461,12 @@ fn test_config_backend_field_exists() {
 }
 
 #[test]
-fn test_orchestrator_uses_api_backend_by_default() {
+fn test_orchestrator_uses_sdk_backend_by_default() {
     let config = mock_config(3);
-    // This creates real ApiAgent instances (reading personality files)
-    // but doesn't require ANTHROPIC_API_KEY since the key is only
-    // checked when making actual API calls
+    // This creates real SdkAgent instances (reading personality files)
+    // No API key needed since the SDK backend uses the claude CLI
     let result = Orchestrator::new(config, &agents_dir(), &prompts_dir(), false);
-    assert!(result.is_ok(), "Orchestrator should create with api backend");
+    assert!(result.is_ok(), "Orchestrator should create with agent-sdk backend");
 }
 
 #[test]

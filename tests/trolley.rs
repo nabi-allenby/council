@@ -535,15 +535,12 @@ fn test_valid_motion_non_binary_parses() {
 }
 
 #[test]
-fn test_non_binary_without_suggestion_parses() {
+fn test_non_binary_without_suggestion_returns_none() {
     let text = r#"---MOTION---
 {"motion": null, "rationale": "Cannot frame as binary", "proceed": false}
 ---END---"#;
-    let parsed = validate_motion_response(text);
-    assert!(parsed.is_some());
-    let parsed = parsed.unwrap();
-    assert!(!parsed.proceed);
-    assert!(parsed.suggestion.is_none());
+    // Suggestion is required when proceed is false — missing suggestion fails validation
+    assert!(validate_motion_response(text).is_none());
 }
 
 #[test]

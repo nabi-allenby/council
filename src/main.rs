@@ -124,11 +124,9 @@ fn main() {
     let session = match orchestrator.run(&cli.question) {
         Ok(s) => s,
         Err(CouncilError::NonBinaryQuestion {
-            rationale,
             suggestion: Some(suggested),
+            ..
         }) => {
-            eprintln!("Your question is hard to frame as a binary vote.");
-            eprintln!("Reason: {}", rationale);
             eprintln!("\nSuggested motion: {}", suggested);
             eprint!("Use this motion? [y/N] ");
             io::stderr().flush().ok();
@@ -148,6 +146,11 @@ fn main() {
                 eprintln!("Aborted. Rephrase your question or use --skip-motion.");
                 process::exit(1);
             }
+        }
+        Err(CouncilError::NonBinaryQuestion { rationale, .. }) => {
+            eprintln!("Cannot frame as a binary vote: {}", rationale);
+            eprintln!("Rephrase your question or use --skip-motion.");
+            process::exit(1);
         }
         Err(e) => {
             eprintln!("Error during council discussion: {}", e);

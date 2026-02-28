@@ -6,65 +6,25 @@ use serde_json::{json, Value};
 use crate::agent::{normalize_text, MOTION_RETRY_PROMPT};
 use crate::config::Backend;
 use crate::error::CouncilError;
+use crate::http::call_anthropic_api;
 use crate::schema::validate_motion_response;
 use crate::types::ParsedMotion;
 
 const MAX_TOKENS: u32 = 1024;
-const API_URL: &str = "https://api.anthropic.com/v1/messages";
-const API_VERSION: &str = "2023-06-01";
 const MAX_RETRIES: u32 = 1;
 
-fn call_api(system: &str, messages: &[(String, String)], model: &str) -> Result<String, CouncilError> {
-    let api_key = std::env::var("ANTHROPIC_API_KEY")
-        .map_err(|_| CouncilError::ApiError("ANTHROPIC_API_KEY not set".into()))?;
-
+fn call_api(
+    system: &str,
+    messages: &[(String, String)],
+    model: &str,
+) -> Result<String, CouncilError> {
     let msg_array: Vec<Value> = messages
         .iter()
         .map(|(role, content)| json!({"role": role, "content": content}))
         .collect();
 
-    let body = json!({
-        "model": model,
-        "max_tokens": MAX_TOKENS,
-        "system": system,
-        "messages": msg_array,
-    });
-
-    let response = Client::new()
-        .post(API_URL)
-        .header("x-api-key", &api_key)
-        .header("anthropic-version", API_VERSION)
-        .header("content-type", "application/json")
-        .json(&body)
-        .send()
-        .map_err(|e| CouncilError::ApiError(format!("Motion API request failed: {}", e)))?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().unwrap_or_default();
-        return Err(CouncilError::ApiError(format!(
-            "Motion API returned {}: {}",
-            status, body
-        )));
-    }
-
-    let resp_json: Value = response
-        .json()
-        .map_err(|e| CouncilError::ApiError(format!("Failed to parse motion response: {}", e)))?;
-
-    let content = resp_json
-        .get("content")
-        .and_then(|c| c.as_array())
-        .ok_or_else(|| CouncilError::ApiError("No content in motion response".into()))?;
-
-    let parts: Vec<String> = content
-        .iter()
-        .filter_map(|block| block.get("text").and_then(|t| t.as_str()))
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
-
-    Ok(normalize_text(&parts.join("\n\n")))
+    let client = Client::new();
+    call_anthropic_api(&client, model, system, &msg_array, MAX_TOKENS, None)
 }
 
 fn call_sdk(system: &str, prompt: &str, model: &str) -> Result<String, CouncilError> {
@@ -78,7 +38,9 @@ fn call_sdk(system: &str, prompt: &str, model: &str) -> Result<String, CouncilEr
         .arg(prompt)
         .env_remove("CLAUDECODE")
         .output()
-        .map_err(|e| CouncilError::ApiError(format!("Failed to run claude CLI for motion: {}", e)))?;
+        .map_err(|e| {
+            CouncilError::ApiError(format!("Failed to run claude CLI for motion: {}", e))
+        })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);

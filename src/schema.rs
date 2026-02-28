@@ -130,6 +130,10 @@ pub fn validate_motion_response(text: &str) -> Option<ParsedMotion> {
             .and_then(|v| v.as_str())
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty() && s.len() <= 500);
+        // Suggestion is required when proceed is false — fail validation to trigger retry
+        if suggestion.is_none() {
+            return None;
+        }
         Some(ParsedMotion {
             motion: None,
             rationale,

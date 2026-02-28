@@ -1,4 +1,5 @@
 use std::process::Command;
+use std::sync::OnceLock;
 
 use reqwest::blocking::Client;
 use serde_json::{json, Value};
@@ -13,6 +14,8 @@ use crate::types::ParsedMotion;
 const MAX_TOKENS: u32 = 1024;
 const MAX_RETRIES: u32 = 1;
 
+static HTTP_CLIENT: OnceLock<Client> = OnceLock::new();
+
 fn call_api(
     system: &str,
     messages: &[(String, String)],
@@ -23,8 +26,8 @@ fn call_api(
         .map(|(role, content)| json!({"role": role, "content": content}))
         .collect();
 
-    let client = Client::new();
-    call_anthropic_api(&client, model, system, &msg_array, MAX_TOKENS, None)
+    let client = HTTP_CLIENT.get_or_init(Client::new);
+    call_anthropic_api(client, model, system, &msg_array, MAX_TOKENS, None)
 }
 
 fn call_sdk(system: &str, prompt: &str, model: &str) -> Result<String, CouncilError> {

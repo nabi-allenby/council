@@ -21,21 +21,9 @@ impl fmt::Display for CouncilError {
             CouncilError::RetryExhausted(msg) => write!(f, "{}", msg),
             CouncilError::NonBinaryQuestion {
                 rationale,
-                suggestion,
+                ..
             } => {
-                write!(
-                    f,
-                    "Your question cannot be framed as a binary (yay/nay) vote.\n\
-                     Reason: {}",
-                    rationale
-                )?;
-                if let Some(s) = suggestion {
-                    write!(f, "\nSuggested motion: {}", s)?;
-                }
-                write!(
-                    f,
-                    "\nPlease rephrase as a yes/no proposal, or use --skip-motion to bypass motion crafting."
-                )
+                write!(f, "Cannot frame as a binary vote: {}", rationale)
             }
         }
     }

@@ -12,23 +12,25 @@ const API_VERSION: &str = "2023-06-01";
 const MAX_HTTP_RETRIES: u32 = 3;
 
 /// Status codes that are safe to retry (transient errors).
-fn is_retryable(status: u16) -> bool {
+pub(crate) fn is_retryable(status: u16) -> bool {
     matches!(status, 429 | 500 | 502 | 503 | 504 | 529)
 }
 
 /// Determine how long to wait before retrying.
 /// For 429, respects the retry-after header (capped at 120s).
 /// For other retryable errors, uses exponential backoff starting at 5s.
-fn retry_delay(status: u16, retry_after: Option<&str>, attempt: u32) -> Duration {
+pub(crate) fn retry_delay(status: u16, retry_after: Option<&str>, attempt: u32) -> Duration {
     if status == 429 {
         if let Some(secs) = retry_after.and_then(|s| s.parse::<u64>().ok()) {
             return Duration::from_secs(secs.min(120));
         }
-        // 429 without retry-after: use longer default
-        return Duration::from_secs(30u64.min(60 * (1 << attempt)));
+        // 429 without retry-after: 30s, 60s, 120s
+        let multiplier = 1u64.checked_shl(attempt).unwrap_or(u64::MAX);
+        return Duration::from_secs(30u64.saturating_mul(multiplier).min(120));
     }
-    // 5xx / 529: exponential backoff starting at 5s
-    Duration::from_secs(5 * (1 << attempt))
+    // 5xx / 529: exponential backoff 5s, 10s, 20s, 40s (capped at 120s)
+    let multiplier = 1u64.checked_shl(attempt).unwrap_or(u64::MAX);
+    Duration::from_secs(5u64.saturating_mul(multiplier).min(120))
 }
 
 /// Make a request to the Anthropic Messages API with automatic retry on transient errors.
@@ -116,4 +118,76 @@ fn extract_text(response: &Value) -> Result<String, CouncilError> {
         .collect();
 
     Ok(normalize_text(&parts.join("\n\n")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_retryable_codes() {
+        assert!(is_retryable(429));
+        assert!(is_retryable(500));
+        assert!(is_retryable(502));
+        assert!(is_retryable(503));
+        assert!(is_retryable(504));
+        assert!(is_retryable(529));
+        assert!(!is_retryable(200));
+        assert!(!is_retryable(400));
+        assert!(!is_retryable(401));
+        assert!(!is_retryable(403));
+        assert!(!is_retryable(404));
+    }
+
+    #[test]
+    fn test_429_with_retry_after_header() {
+        let delay = retry_delay(429, Some("10"), 0);
+        assert_eq!(delay, Duration::from_secs(10));
+    }
+
+    #[test]
+    fn test_429_retry_after_capped_at_120s() {
+        let delay = retry_delay(429, Some("300"), 0);
+        assert_eq!(delay, Duration::from_secs(120));
+    }
+
+    #[test]
+    fn test_429_without_retry_after_escalates() {
+        let d0 = retry_delay(429, None, 0);
+        let d1 = retry_delay(429, None, 1);
+        let d2 = retry_delay(429, None, 2);
+        assert_eq!(d0, Duration::from_secs(30));
+        assert_eq!(d1, Duration::from_secs(60));
+        assert_eq!(d2, Duration::from_secs(120));
+    }
+
+    #[test]
+    fn test_5xx_exponential_backoff() {
+        let d0 = retry_delay(500, None, 0);
+        let d1 = retry_delay(500, None, 1);
+        let d2 = retry_delay(500, None, 2);
+        assert_eq!(d0, Duration::from_secs(5));
+        assert_eq!(d1, Duration::from_secs(10));
+        assert_eq!(d2, Duration::from_secs(20));
+    }
+
+    #[test]
+    fn test_529_uses_same_backoff_as_5xx() {
+        let d0 = retry_delay(529, None, 0);
+        let d1 = retry_delay(529, None, 1);
+        assert_eq!(d0, Duration::from_secs(5));
+        assert_eq!(d1, Duration::from_secs(10));
+    }
+
+    #[test]
+    fn test_5xx_backoff_capped_at_120s() {
+        let d = retry_delay(500, None, 10);
+        assert_eq!(d, Duration::from_secs(120));
+    }
+
+    #[test]
+    fn test_429_invalid_retry_after_falls_back() {
+        let delay = retry_delay(429, Some("not-a-number"), 0);
+        assert_eq!(delay, Duration::from_secs(30));
+    }
 }

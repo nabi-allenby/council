@@ -1,9 +1,11 @@
+use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process;
 
 use clap::Parser;
 
 use council::config::{load_config, Backend};
+use council::error::CouncilError;
 use council::orchestrator::Orchestrator;
 use council::output::format_decision_record;
 use council::report::save_report;
@@ -38,6 +40,10 @@ struct Cli {
     /// Agent backend: 'agent-sdk' (Claude CLI) or 'api' (direct Anthropic API)
     #[arg(short, long, value_parser = ["agent-sdk", "api"])]
     backend: Option<String>,
+
+    /// Skip motion crafting and use the original question directly
+    #[arg(long)]
+    skip_motion: bool,
 }
 
 fn main() {
@@ -106,7 +112,7 @@ fn main() {
 
     // Create orchestrator
     let orchestrator =
-        match Orchestrator::new(config, &agents_dir, &prompts_dir, cli.verbose) {
+        match Orchestrator::new(config, &agents_dir, &prompts_dir, cli.verbose, cli.skip_motion) {
             Ok(o) => o,
             Err(e) => {
                 eprintln!("Error: {}", e);
@@ -117,6 +123,35 @@ fn main() {
     // Run session
     let session = match orchestrator.run(&cli.question) {
         Ok(s) => s,
+        Err(CouncilError::NonBinaryQuestion {
+            suggestion: Some(suggested),
+            ..
+        }) => {
+            eprintln!("\nSuggested motion: {}", suggested);
+            eprint!("Use this motion? [y/N] ");
+            io::stderr().flush().ok();
+
+            let mut input = String::new();
+            io::stdin().read_line(&mut input).unwrap_or(0);
+
+            if input.trim().eq_ignore_ascii_case("y") {
+                match orchestrator.run_with_motion(&cli.question, suggested) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        eprintln!("Error during council discussion: {}", e);
+                        process::exit(1);
+                    }
+                }
+            } else {
+                eprintln!("Aborted. Rephrase your question or use --skip-motion.");
+                process::exit(1);
+            }
+        }
+        Err(CouncilError::NonBinaryQuestion { rationale, .. }) => {
+            eprintln!("Cannot frame as a binary vote: {}", rationale);
+            eprintln!("Rephrase your question or use --skip-motion.");
+            process::exit(1);
+        }
         Err(e) => {
             eprintln!("Error during council discussion: {}", e);
             process::exit(1);

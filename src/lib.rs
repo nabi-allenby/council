@@ -2,6 +2,8 @@ pub mod agent;
 pub mod api_backend;
 pub mod config;
 pub mod error;
+pub mod http;
+pub mod motion;
 pub mod orchestrator;
 pub mod output;
 pub mod prompt;

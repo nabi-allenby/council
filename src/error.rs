@@ -6,6 +6,10 @@ pub enum CouncilError {
     Validation(String),
     ApiError(String),
     RetryExhausted(String),
+    NonBinaryQuestion {
+        rationale: String,
+        suggestion: Option<String>,
+    },
 }
 
 impl fmt::Display for CouncilError {
@@ -15,6 +19,12 @@ impl fmt::Display for CouncilError {
             CouncilError::Validation(msg) => write!(f, "{}", msg),
             CouncilError::ApiError(msg) => write!(f, "{}", msg),
             CouncilError::RetryExhausted(msg) => write!(f, "{}", msg),
+            CouncilError::NonBinaryQuestion {
+                rationale,
+                ..
+            } => {
+                write!(f, "Cannot frame as a binary vote: {}", rationale)
+            }
         }
     }
 }

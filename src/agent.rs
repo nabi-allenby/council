@@ -19,6 +19,14 @@ Please reply with ONLY the corrected block:\n\n\
 {\"vote\": \"yay or nay\", \"reason\": \"one or two sentences (max 500 chars)\"}\n\
 ---END---";
 
+pub const MOTION_RETRY_PROMPT: &str = "\
+Your response is missing or has an invalid ---MOTION--- block. \
+Please reply with ONLY the corrected block:\n\n\
+---MOTION---\n\
+{\"motion\": \"The binary motion or null\", \"rationale\": \"Brief explanation\", \
+\"proceed\": true}\n\
+---END---";
+
 pub const MAX_RETRIES_DEFAULT: u32 = 2;
 
 #[derive(Debug, Clone)]

@@ -1,7 +1,7 @@
 use regex::Regex;
 use serde_json::Value;
 
-use crate::types::{ParsedResponse, ParsedVote, VoteChoice};
+use crate::types::{ParsedMotion, ParsedResponse, ParsedVote, VoteChoice};
 
 pub fn validate_discussion_response(text: &str) -> Option<ParsedResponse> {
     let re = Regex::new(r"(?s)---RESPONSE---\s*(.*?)---END---").unwrap();
@@ -94,10 +94,133 @@ pub fn validate_vote_response(text: &str) -> Option<ParsedVote> {
     })
 }
 
+pub fn validate_motion_response(text: &str) -> Option<ParsedMotion> {
+    let re = Regex::new(r"(?s)---MOTION---\s*(.*?)---END---").unwrap();
+    let caps = re.captures(text)?;
+    let json_str = caps.get(1)?.as_str().trim();
+
+    let data: Value = serde_json::from_str(json_str).ok()?;
+
+    let proceed = data.get("proceed")?.as_bool()?;
+
+    let rationale = data
+        .get("rationale")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+
+    if proceed {
+        let motion = data.get("motion")?.as_str()?.trim().to_string();
+        if motion.is_empty() || motion.len() > 500 {
+            return None;
+        }
+        Some(ParsedMotion {
+            motion: Some(motion),
+            rationale,
+            suggestion: None,
+            proceed: true,
+        })
+    } else {
+        if rationale.is_empty() {
+            return None;
+        }
+        let suggestion = data
+            .get("suggestion")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty() && s.len() <= 500)
+            .filter(|s| is_votable_motion(s));
+        Some(ParsedMotion {
+            motion: None,
+            rationale,
+            suggestion,
+            proceed: false,
+        })
+    }
+}
+
+/// Check that a suggestion is a votable motion, not a meta-question asking the user to rephrase.
+pub(crate) fn is_votable_motion(s: &str) -> bool {
+    let lower = s.to_lowercase();
+    // Reject if suggestion starts with a meta-question phrase
+    let starts_with_meta = [
+        "could you",
+        "can you",
+        "please provide",
+        "please rephrase",
+        "please clarify",
+        "what do you mean",
+        "what did you mean",
+        "try again",
+        "be more specific",
+        "rephrase",
+        "clarify",
+    ];
+    if starts_with_meta.iter().any(|p| lower.starts_with(p)) {
+        return false;
+    }
+    // Reject if it contains directive language aimed at the user
+    let contains_meta = [
+        "rephrase this",
+        "rephrase your",
+        "clarify your",
+        "provide more",
+    ];
+    !contains_meta.iter().any(|p| lower.contains(p))
+}
+
 pub fn strip_structured_block(text: &str) -> String {
     let re_response = Regex::new(r"(?s)\n*---RESPONSE---\s*.*?---END---\s*").unwrap();
     let text = re_response.replace_all(text, "");
     let re_vote = Regex::new(r"(?s)\n*---VOTE---\s*.*?---END---\s*").unwrap();
     let text = re_vote.replace_all(&text, "");
+    let re_motion = Regex::new(r"(?s)\n*---MOTION---\s*.*?---END---\s*").unwrap();
+    let text = re_motion.replace_all(&text, "");
     text.trim_end().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_rejects_meta_questions_starting_with_could_you() {
+        assert!(!is_votable_motion("Could you rephrase this as a yes/no question?"));
+    }
+
+    #[test]
+    fn test_rejects_meta_questions_starting_with_can_you() {
+        assert!(!is_votable_motion("Can you provide a clearer question?"));
+    }
+
+    #[test]
+    fn test_rejects_please_rephrase() {
+        assert!(!is_votable_motion("Please rephrase your question"));
+    }
+
+    #[test]
+    fn test_rejects_rephrase_this_in_middle() {
+        assert!(!is_votable_motion("You should rephrase this question as binary"));
+    }
+
+    #[test]
+    fn test_accepts_motion_containing_could() {
+        assert!(is_votable_motion("Should we invest in something that could reduce costs?"));
+    }
+
+    #[test]
+    fn test_accepts_motion_containing_can() {
+        assert!(is_votable_motion("Should we adopt a tool we can use daily?"));
+    }
+
+    #[test]
+    fn test_accepts_normal_motion() {
+        assert!(is_votable_motion("Should we say the sky is blue?"));
+    }
+
+    #[test]
+    fn test_accepts_should_we_motion() {
+        assert!(is_votable_motion("Should we recommend Python as the best language?"));
+    }
 }

@@ -37,9 +37,17 @@ pub fn generate_report(session: &Session) -> String {
         String::new(),
         format!("> {}", session.question),
         String::new(),
+    ];
+    if let Some(motion) = &session.crafted_motion {
+        lines.push("## Motion".to_string());
+        lines.push(String::new());
+        lines.push(format!("> {}", motion));
+        lines.push(String::new());
+    }
+    lines.extend([
         "---".to_string(),
         String::new(),
-    ];
+    ]);
 
     // Vote table
     lines.extend([
@@ -184,7 +192,7 @@ pub fn save_report(session: &Session, logs_dir: &Path) -> Result<PathBuf, Counci
 
     let timestamp = Local::now().format("%Y%m%d-%H%M%S").to_string();
     let slug: String = session
-        .question
+        .motion()
         .chars()
         .take(40)
         .collect::<String>()

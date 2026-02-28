@@ -1,0 +1,11 @@
+name: Worktree
+on:
+  issues:
+    types: [opened]
+jobs:
+  comment:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - uses: worktree-io/comment-action@v1

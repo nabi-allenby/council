@@ -1,5 +1,7 @@
 """Mock agent that returns canned responses without LLM calls."""
 
+from __future__ import annotations
+
 from council.types import ParsedResponse, Turn, Vote
 
 # Predefined positions per role

@@ -1,5 +1,7 @@
 """Load and validate council configuration from agents/council.json."""
 
+from __future__ import annotations
+
 import json
 from dataclasses import dataclass, field
 from pathlib import Path

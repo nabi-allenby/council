@@ -1,7 +1,10 @@
+from __future__ import annotations
+
 from pathlib import Path
 
 import anthropic
 
+from .agent_base import DISCUSSION_RETRY_PROMPT, VOTE_RETRY_PROMPT, normalize_text
 from .schema import strip_structured_block, validate_discussion_response, validate_vote_response
 from .types import Turn, Vote
 
@@ -58,17 +61,7 @@ class Agent:
             if attempt < max_retries:
                 messages = messages + [
                     {"role": "assistant", "content": text},
-                    {
-                        "role": "user",
-                        "content": (
-                            "Your response is missing or has an invalid ---RESPONSE--- block. "
-                            "Please reply with ONLY the corrected block:\n\n"
-                            "---RESPONSE---\n"
-                            '{"position": "...", "reasoning": ["..."], '
-                            '"concerns": [], "updated_by": []}\n'
-                            "---END---"
-                        ),
-                    },
+                    {"role": "user", "content": DISCUSSION_RETRY_PROMPT},
                 ]
 
         raise ValueError(
@@ -106,17 +99,7 @@ class Agent:
             if attempt < max_retries:
                 messages = messages + [
                     {"role": "assistant", "content": text},
-                    {
-                        "role": "user",
-                        "content": (
-                            "Your response is missing or has an invalid ---VOTE--- block. "
-                            "The reason MUST be under 500 characters. "
-                            "Please reply with ONLY the corrected block:\n\n"
-                            "---VOTE---\n"
-                            '{"vote": "yay or nay", "reason": "one or two sentences (max 500 chars)"}\n'
-                            "---END---"
-                        ),
-                    },
+                    {"role": "user", "content": VOTE_RETRY_PROMPT},
                 ]
 
         raise ValueError(
@@ -125,15 +108,12 @@ class Agent:
         )
 
     @staticmethod
-    def _extract_text(response) -> str:
+    def _extract_text(response: anthropic.types.Message) -> str:
         """Extract text from response, handling multi-block responses (e.g. web search)."""
-        parts = []
+        parts: list[str] = []
         for block in response.content:
             if hasattr(block, "text"):
                 stripped = block.text.strip()
                 if stripped:
                     parts.append(stripped)
-        text = "\n\n".join(parts)
-        while "\n\n\n" in text:
-            text = text.replace("\n\n\n", "\n\n")
-        return text
+        return normalize_text("\n\n".join(parts))

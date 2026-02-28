@@ -1,9 +1,12 @@
 """Agent backend using the Claude Agent SDK for multi-turn tool use."""
 
+from __future__ import annotations
+
 import asyncio
 import os
 from pathlib import Path
 
+from .agent_base import DISCUSSION_RETRY_PROMPT, VOTE_RETRY_PROMPT, normalize_text
 from .schema import strip_structured_block, validate_discussion_response, validate_vote_response
 from .types import Turn, Vote
 
@@ -54,15 +57,7 @@ class AgentSDKAgent:
                 )
 
             if attempt < max_retries:
-                prompt = (
-                    f"{prompt}\n\n"
-                    "Your response is missing or has an invalid ---RESPONSE--- block. "
-                    "Please reply with ONLY the corrected block:\n\n"
-                    "---RESPONSE---\n"
-                    '{"position": "...", "reasoning": ["..."], '
-                    '"concerns": [], "updated_by": []}\n'
-                    "---END---"
-                )
+                prompt = f"{prompt}\n\n{DISCUSSION_RETRY_PROMPT}"
 
         raise ValueError(
             f"{self.role} failed to produce valid ---RESPONSE--- block "
@@ -90,15 +85,7 @@ class AgentSDKAgent:
                 )
 
             if attempt < max_retries:
-                prompt = (
-                    f"{prompt}\n\n"
-                    "Your response is missing or has an invalid ---VOTE--- block. "
-                    "The reason MUST be under 500 characters. "
-                    "Please reply with ONLY the corrected block:\n\n"
-                    "---VOTE---\n"
-                    '{"vote": "yay or nay", "reason": "one or two sentences (max 500 chars)"}\n'
-                    "---END---"
-                )
+                prompt = f"{prompt}\n\n{VOTE_RETRY_PROMPT}"
 
         raise ValueError(
             f"{self.role} failed to produce valid ---VOTE--- block "
@@ -150,7 +137,4 @@ class AgentSDKAgent:
         if result_text:
             return result_text
 
-        text = "\n\n".join(parts)
-        while "\n\n\n" in text:
-            text = text.replace("\n\n\n", "\n\n")
-        return text
+        return normalize_text("\n\n".join(parts))

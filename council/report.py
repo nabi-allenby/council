@@ -5,6 +5,8 @@ Reports are saved to logs/ with a clear two-level structure:
   2. Full detail (complete agent responses, round by round)
 """
 
+from __future__ import annotations
+
 from datetime import datetime, timezone
 from pathlib import Path
 

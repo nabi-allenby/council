@@ -1,12 +1,17 @@
+from __future__ import annotations
+
 from pathlib import Path
 
 from .agent import Agent
+from .agent_base import AgentBackend
 from .config import AGENTS_DIR, CouncilConfig
 from .prompt import discussion_prompt, vote_prompt
 from .types import Session, Turn, Vote
 
 
-def _make_agent(role: str, path: str, model: str, tools: list[str], backend: str):
+def _make_agent(
+    role: str, path: str, model: str, tools: list[str], backend: str
+) -> AgentBackend:
     """Create an agent using the configured backend."""
     if backend == "agent-sdk":
         from .agent_sdk_backend import AgentSDKAgent
@@ -20,12 +25,12 @@ class Orchestrator:
         config: CouncilConfig,
         agents_dir: Path = AGENTS_DIR,
         verbose: bool = False,
-        agents: dict[str, Agent] | None = None,
+        agents: dict[str, AgentBackend] | None = None,
     ):
         self.config = config
         self.verbose = verbose
         if agents is not None:
-            self.agents = agents
+            self.agents: dict[str, AgentBackend] = agents
         else:
             self.agents = {}
             for role in config.rotation:

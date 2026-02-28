@@ -12,8 +12,6 @@ from .types import Session
 
 LOGS_DIR = Path(__file__).resolve().parent.parent / "logs"
 
-ROTATION = ["creator", "scout", "skeptic", "implementer", "guardian"]
-
 
 def generate_report(session: Session) -> str:
     """Build a two-level markdown report: summary + detail."""
@@ -22,6 +20,7 @@ def generate_report(session: Session) -> str:
     yays = [v for v in session.votes if v.vote == "yay"]
     nays = [v for v in session.votes if v.vote == "nay"]
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    rotation = session.rotation
 
     # ── SECTION 1: Executive Summary ──
     lines = [
@@ -34,10 +33,6 @@ def generate_report(session: Session) -> str:
         f"> {session.question}",
         "",
         "---",
-        "",
-        "## Motion",
-        "",
-        f"> {motion}",
         "",
     ]
 
@@ -54,27 +49,34 @@ def generate_report(session: Session) -> str:
     lines.append("")
 
     # Position evolution table
+    max_round = max((t.round for t in session.turns), default=0)
     lines.extend([
         "## Position Evolution",
         "",
-        "| Agent | Round 1 | Round 2 | Round 3 |",
-        "|-------|---------|---------|---------|",
     ])
-    for role in ROTATION:
+    # Build header
+    header = "| Agent |"
+    separator = "|-------|"
+    for r in range(1, max_round + 1):
+        header += f" Round {r} |"
+        separator += "---------|"
+    lines.extend([header, separator])
+
+    for role in rotation:
         positions: dict[int, str] = {}
         for turn in session.turns:
             if turn.agent == role:
                 positions[turn.round] = turn.parsed.position
-        r1 = _truncate(positions.get(1, "-"), 80)
-        r2 = _truncate(positions.get(2, "-"), 80)
-        r3 = _truncate(positions.get(3, "-"), 80)
-        lines.append(f"| {role.title()} | {r1} | {r2} | {r3} |")
+        row = f"| {role.title()} |"
+        for r in range(1, max_round + 1):
+            row += f" {_truncate(positions.get(r, '-'), 80)} |"
+        lines.append(row)
     lines.append("")
 
-    # Outstanding concerns from round 3
+    # Outstanding concerns from final round
     concerns = []
     for turn in session.turns:
-        if turn.round == 3:
+        if turn.round == max_round:
             for c in turn.parsed.concerns:
                 concerns.append(f"- **{turn.agent.title()}**: {c}")
     if concerns:

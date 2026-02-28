@@ -4,48 +4,48 @@ from council.types import ParsedResponse, Turn, Vote
 
 # Predefined positions per role
 POSITIONS = {
-    "creator": [
-        "Pull the lever — net harm reduction of 4 lives is the strongest opening frame.",
-        "Reframing: pulling the lever is an act of moral courage, not cold calculation.",
-        "Pull the lever. The council converges — the question is about owning the choice.",
+    "architect": [
+        "Reframe: this is not a binary — it is a design question about what kind of moral agent you want to be.",
+        "The lever pull is the obvious answer; the interesting question is why we built systems where this choice exists.",
+        "Pull the lever. But the elegant move is preventing this scenario entirely — that is the real design challenge.",
     ],
-    "scout": [
-        "Research supports pulling: ~90% of respondents choose to divert in survey studies.",
-        "Dual-process theory confirms: deliberative reasoning favors utilitarian action here.",
-        "Evidence is clear — pull the lever. Empirical and philosophical consensus align.",
+    "sentinel": [
+        "Pull, but the moral injury to the actor is being underweighted — someone has to live with actively causing a death.",
+        "The Architect's reframe dodges the immediate stakes. Real people die while we redesign systems.",
+        "Pull the lever, carry the cost. But flag: repeated trolley choices erode moral sensitivity over time.",
     ],
-    "skeptic": [
-        "Pull, but the 5-vs-1 framing hides that you are actively choosing to kill one person.",
-        "Creator and Scout overstate certainty — real trolley situations have incomplete info.",
-        "Despite caveats, pulling is defensible. The Skeptic's job is stress-testing, not blocking.",
+    "steward": [
+        "Pull the lever. 5 > 1. But document the reasoning and assign accountability for preventing recurrence.",
+        "Architect and Sentinel both have points, but neither has a concrete next step. Here is what we actually do.",
+        "Pull. Then: incident review within 48 hours, infrastructure audit within 30 days, assigned owner for each.",
     ],
-    "implementer": [
-        "Pull the lever. Inaction lets 5 die — that is also a choice, and a worse one.",
-        "Council aligns on pulling. Remaining disagreement is about framing, not the action.",
-        "Pull the lever and own the moral weight. This is the council's clear recommendation.",
+    "mediator": [
+        "Everyone is converging on pulling — the real disagreement is about what happens after and how we hold the cost.",
+        "Architect and Steward are saying the same thing differently: act now, fix systems later. The Sentinel adds the emotional cost.",
+        "Pull the lever. The group agrees. Name the cost, resource the follow-through, support the person who acts.",
     ],
-    "guardian": [
-        "Pulling is values-aligned if you honor the gravity — the one person matters too.",
-        "Skeptic's point about incomplete info is valid but doesn't change the answer here.",
-        "Pull the lever. Acknowledge the cost. This is sustainable and ethically grounded.",
+    "firebrand": [
+        "Pull the lever. Five lives outweigh one. Stop philosophizing and decide.",
+        "The council is overthinking this. The math is clear and the moral case holds. Pull it.",
+        "Pull the lever and own the choice. This is the council's clear recommendation.",
     ],
 }
 
 VOTE_REASONS = {
-    "creator": "The motion captures both action and moral ownership — exactly right.",
-    "scout": "Empirical evidence and philosophical consensus strongly support pulling.",
-    "skeptic": "Despite reservations about framing, the substance is correct — pull.",
-    "implementer": "Clear, actionable, and accounts for moral weight. Sound closure.",
-    "guardian": "Values-aligned — pulling while owning the cost is the integrity move.",
+    "architect": "The reframe holds: act now, design the prevention. This is the right shape.",
+    "sentinel": "Pull, but only because the alternative is worse. The cost to the actor is real.",
+    "steward": "Clear, accountable, actionable. Pull the lever with follow-through.",
+    "mediator": "The group converged honestly. Pull the lever, hold the cost together.",
+    "firebrand": "Five lives. One lever. Pull it. This should not have taken three rounds.",
 }
 
 
 class MockAgent:
     """Drop-in replacement for Agent that returns predefined responses."""
 
-    def __init__(self, role: str):
+    def __init__(self, role: str, tools: list[str] | None = None):
         self.role = role
-        self._call_count = 0
+        self.tools = tools or []
 
     def respond(self, round_num: int, system_context: str, messages: list[dict], **kwargs) -> Turn:
         idx = min(round_num - 1, len(POSITIONS[self.role]) - 1)
@@ -59,7 +59,7 @@ class MockAgent:
                 position=position,
                 reasoning=[f"Reasoning point for {self.role} round {round_num}"],
                 concerns=[] if round_num == 3 else [f"Minor caveat from {self.role}"],
-                updated_by=[] if round_num == 1 else ["creator", "skeptic"],
+                updated_by=[] if round_num == 1 else ["architect", "sentinel"],
             ),
         )
 

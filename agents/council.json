@@ -1,0 +1,7 @@
+{
+  "rotation": ["architect", "sentinel", "steward", "mediator", "firebrand"],
+  "rounds": 3,
+  "tools": {
+    "architect": ["web_search"]
+  }
+}

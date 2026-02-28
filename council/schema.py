@@ -69,7 +69,7 @@ def validate_vote_response(text: str) -> ParsedVote | None:
     reason = data.get("reason")
     if not isinstance(reason, str) or not reason.strip():
         return None
-    if len(reason) > 200:
+    if len(reason) > 500:
         return None
 
     return ParsedVote(vote=vote, reason=reason.strip())

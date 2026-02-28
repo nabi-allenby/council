@@ -4,6 +4,7 @@ import sys
 
 from dotenv import load_dotenv
 
+from .config import CouncilConfig, load_config
 from .orchestrator import Orchestrator
 from .output import format_decision_record
 from .report import save_report
@@ -14,11 +15,22 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(
         prog="council",
-        description="Run a council discussion on a question using 5 AI agents",
+        description="Run a council discussion on a question using AI agents",
     )
     parser.add_argument("question", help="The question for the council to discuss")
     parser.add_argument(
         "--verbose", "-v", action="store_true", help="Show turns and votes during execution"
+    )
+    parser.add_argument(
+        "--rounds", "-r", type=int, default=None, help="Number of discussion rounds (overrides config)"
+    )
+    parser.add_argument(
+        "--rotation", type=str, default=None,
+        help="Comma-separated agent rotation order (overrides config), e.g. architect,firebrand,steward"
+    )
+    parser.add_argument(
+        "--tools", type=str, default=None,
+        help="Comma-separated agent:tool pairs (overrides config), e.g. architect:web_search,scout:web_search"
     )
     args = parser.parse_args()
 
@@ -33,8 +45,26 @@ def main() -> None:
         )
         sys.exit(1)
 
+    # Load config from agents/council.json
     try:
-        orchestrator = Orchestrator(verbose=args.verbose)
+        config = load_config()
+    except (FileNotFoundError, ValueError) as e:
+        print(f"Error loading config: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    # Apply CLI overrides
+    if args.rounds is not None:
+        config.rounds = args.rounds
+    if args.rotation is not None:
+        config.rotation = [r.strip() for r in args.rotation.split(",")]
+    if args.tools is not None:
+        config.tools = {}
+        for pair in args.tools.split(","):
+            agent, tool = pair.strip().split(":")
+            config.tools.setdefault(agent.strip(), []).append(tool.strip())
+
+    try:
+        orchestrator = Orchestrator(config=config, verbose=args.verbose)
     except FileNotFoundError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)

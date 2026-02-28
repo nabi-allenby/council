@@ -1,43 +1,44 @@
 from pathlib import Path
 
 from .agent import Agent
+from .config import CouncilConfig
 from .prompt import discussion_prompt, vote_prompt
 from .types import Session, Turn, Vote
 
 AGENTS_DIR = Path(__file__).resolve().parent.parent / "agents"
 
-# Fixed rotation order
-ROTATION = ["creator", "scout", "skeptic", "implementer", "guardian"]
-NUM_ROUNDS = 3
-
 
 class Orchestrator:
     def __init__(
         self,
+        config: CouncilConfig,
         agents_dir: Path = AGENTS_DIR,
         verbose: bool = False,
         agents: dict[str, Agent] | None = None,
     ):
+        self.config = config
         self.verbose = verbose
         if agents is not None:
             self.agents = agents
         else:
             self.agents: dict[str, Agent] = {}
-            for role in ROTATION:
+            for role in config.rotation:
                 path = agents_dir / f"{role}.md"
                 if not path.exists():
                     raise FileNotFoundError(f"Agent personality file not found: {path}")
-                self.agents[role] = Agent(role, str(path))
+                tools = config.tools.get(role, [])
+                self.agents[role] = Agent(role, str(path), tools=tools)
 
     def run(self, question: str) -> Session:
         session = Session(question=question)
 
-        # --- Discussion: 3 rounds × 5 agents = 15 calls ---
-        for round_num in range(1, NUM_ROUNDS + 1):
+        # --- Discussion: N rounds × M agents ---
+        for round_num in range(1, self.config.rounds + 1):
             self._log_round(round_num)
-            system_ctx = discussion_prompt(round_num)
+            system_ctx = discussion_prompt(round_num, self.config.rounds)
 
-            for role in ROTATION:
+            for role in self.config.rotation:
+                self._log_waiting(role)
                 transcript = self._build_transcript(session, round_num, role)
                 messages = [{"role": "user", "content": transcript}]
 
@@ -45,16 +46,16 @@ class Orchestrator:
                 session.turns.append(turn)
                 self._log_turn(turn)
 
-        # --- Vote: 5 calls ---
+        # --- Vote ---
         self._log_round("VOTE")
-        motion = session.motion
-        vote_ctx = vote_prompt(motion)
+        vote_ctx = vote_prompt(question)
         full_transcript = self._build_full_transcript(session)
 
-        for role in ROTATION:
+        for role in self.config.rotation:
+            self._log_waiting(role, "voting")
             vote_message = (
                 f"{full_transcript}\n\n---\n\n"
-                f"You are {role.title()}. Cast your vote on the motion above."
+                f"You are {role.title()}. Cast your vote on the question above."
             )
             messages = [{"role": "user", "content": vote_message}]
 
@@ -67,13 +68,7 @@ class Orchestrator:
     def _build_transcript(
         self, session: Session, current_round: int, current_role: str
     ) -> str:
-        """Build the transcript visible to a specific agent at a specific point.
-
-        Agent N in round R sees:
-        - All turns from rounds 1..R-1
-        - Turns from agents before them in the current round R
-        (Later agents in round R haven't spoken yet — their turns aren't in session.turns.)
-        """
+        """Build the transcript visible to a specific agent at a specific point."""
         parts = [f"# Question\n\n{session.question}"]
 
         prev_round = 0
@@ -118,23 +113,27 @@ class Orchestrator:
 
         return "\n\n".join(parts)
 
+    def _log_waiting(self, role: str, action: str = "thinking") -> None:
+        if self.verbose:
+            print(f"  [{role.title()} {action}...]", flush=True)
+
     def _log_round(self, round_id: int | str) -> None:
         if self.verbose:
-            print(f"\n{'=' * 60}")
-            print(f"  ROUND: {round_id}")
-            print(f"{'=' * 60}\n")
+            print(f"\n{'=' * 60}", flush=True)
+            print(f"  ROUND: {round_id}", flush=True)
+            print(f"{'=' * 60}\n", flush=True)
 
     def _log_turn(self, turn: Turn) -> None:
         if self.verbose:
-            print(f"--- {turn.agent.title()} (Round {turn.round}) ---")
-            print(f"Position: {turn.parsed.position}")
+            print(f"--- {turn.agent.title()} (Round {turn.round}) ---", flush=True)
+            print(f"Position: {turn.parsed.position}", flush=True)
             if turn.parsed.concerns:
-                print(f"Concerns: {turn.parsed.concerns}")
-            print(f"{turn.content[:200]}...")
-            print()
+                print(f"Concerns: {turn.parsed.concerns}", flush=True)
+            print(turn.content, flush=True)
+            print(flush=True)
 
     def _log_vote(self, vote: Vote) -> None:
         if self.verbose:
-            print(f"--- {vote.agent.title()}: {vote.vote.upper()} ---")
-            print(f"Reason: {vote.reason}")
-            print()
+            print(f"--- {vote.agent.title()}: {vote.vote.upper()} ---", flush=True)
+            print(f"Reason: {vote.reason}", flush=True)
+            print(flush=True)

@@ -17,9 +17,10 @@ WEB_SEARCH_TOOL = {
 
 
 class Agent:
-    def __init__(self, role: str, personality_path: str):
+    def __init__(self, role: str, personality_path: str, tools: list[str] | None = None):
         self.role = role
         self.personality = Path(personality_path).read_text()
+        self.tools = tools or []
         self.client = anthropic.Anthropic()
 
     def respond(
@@ -31,7 +32,7 @@ class Agent:
     ) -> Turn:
         system = self.personality + "\n\n" + system_context
 
-        use_search = self.role == "scout"
+        use_search = "web_search" in self.tools
         api_kwargs: dict = {
             "model": MODEL,
             "max_tokens": MAX_TOKENS_SEARCH if use_search else MAX_TOKENS,
@@ -109,9 +110,10 @@ class Agent:
                         "role": "user",
                         "content": (
                             "Your response is missing or has an invalid ---VOTE--- block. "
-                            "Please reply with ONLY the vote block:\n\n"
+                            "The reason MUST be under 500 characters. "
+                            "Please reply with ONLY the corrected block:\n\n"
                             "---VOTE---\n"
-                            '{"vote": "yay or nay", "reason": "one sentence"}\n'
+                            '{"vote": "yay or nay", "reason": "one or two sentences (max 500 chars)"}\n'
                             "---END---"
                         ),
                     },
@@ -124,11 +126,7 @@ class Agent:
 
     @staticmethod
     def _extract_text(response) -> str:
-        """Extract text from response, handling multi-block responses (e.g. web search).
-
-        Web search responses interleave text blocks with tool-use/result blocks.
-        Strip each block and rejoin with paragraph breaks, then collapse excess newlines.
-        """
+        """Extract text from response, handling multi-block responses (e.g. web search)."""
         parts = []
         for block in response.content:
             if hasattr(block, "text"):

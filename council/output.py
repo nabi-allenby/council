@@ -4,14 +4,12 @@ from .types import Session
 def format_decision_record(session: Session) -> str:
     """Concise executive summary — outcome, motion, votes."""
     outcome = session.outcome
-    motion = session.motion
     yays = [v for v in session.votes if v.vote == "yay"]
     nays = [v for v in session.votes if v.vote == "nay"]
 
     sections = [
         f"# Council Decision: {session.question}",
         f"**Outcome: {outcome.upper()}** ({len(yays)}-{len(nays)})",
-        f"**Motion:** {motion}",
     ]
 
     # Vote breakdown
@@ -22,9 +20,10 @@ def format_decision_record(session: Session) -> str:
     sections.append("## Votes\n\n" + "\n".join(vote_lines))
 
     # Key concerns from final round (informational only)
-    round_3_turns = [t for t in session.turns if t.round == 3]
+    max_round = max((t.round for t in session.turns), default=0)
+    final_turns = [t for t in session.turns if t.round == max_round]
     all_concerns = []
-    for turn in round_3_turns:
+    for turn in final_turns:
         for concern in turn.parsed.concerns:
             all_concerns.append(f"- **{turn.agent.title()}**: {concern}")
     if all_concerns:

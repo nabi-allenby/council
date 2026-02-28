@@ -22,8 +22,8 @@ class ParsedVote:
 
 @dataclass
 class Turn:
-    agent: str  # "creator" | "scout" | "skeptic" | "implementer" | "guardian"
-    round: int  # 1, 2, or 3
+    agent: str
+    round: int
     content: str  # Prose only (structured block stripped)
     parsed: ParsedResponse
 
@@ -44,13 +44,18 @@ class Session:
     @property
     def outcome(self) -> Literal["approved", "rejected"]:
         yays = sum(1 for v in self.votes if v.vote == "yay")
-        return "approved" if yays >= 3 else "rejected"
+        return "approved" if yays >= len(self.votes) // 2 + 1 else "rejected"
 
     @property
     def motion(self) -> str:
-        """The position being voted on (Implementer's round 3 position)."""
-        for turn in reversed(self.turns):
-            if turn.agent == "implementer" and turn.round == 3:
-                return turn.parsed.position
-        # Fallback: last turn's position
-        return self.turns[-1].parsed.position if self.turns else ""
+        """The motion is the original question put to vote."""
+        return self.question
+
+    @property
+    def rotation(self) -> list[str]:
+        """Derive rotation order from turns."""
+        seen: list[str] = []
+        for turn in self.turns:
+            if turn.agent not in seen:
+                seen.append(turn.agent)
+        return seen

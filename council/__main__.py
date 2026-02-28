@@ -42,17 +42,6 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        print(
-            "Error: ANTHROPIC_API_KEY is not set.\n"
-            "Add it to a .env file:\n"
-            "  echo 'ANTHROPIC_API_KEY=your-key-here' > .env\n"
-            "Or export it directly:\n"
-            "  export ANTHROPIC_API_KEY='your-key-here'",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
     # Load config from agents/council.json
     try:
         config = load_config()
@@ -74,6 +63,18 @@ def main() -> None:
             config.tools.setdefault(agent.strip(), []).append(tool.strip())
     if args.backend is not None:
         config.backend = args.backend
+
+    # API backend requires ANTHROPIC_API_KEY; SDK backend uses Claude Code
+    if config.backend == "api" and not os.environ.get("ANTHROPIC_API_KEY"):
+        print(
+            "Error: ANTHROPIC_API_KEY is not set.\n"
+            "Add it to a .env file:\n"
+            "  echo 'ANTHROPIC_API_KEY=your-key-here' > .env\n"
+            "Or export it directly:\n"
+            "  export ANTHROPIC_API_KEY='your-key-here'",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     try:
         orchestrator = Orchestrator(config=config, verbose=args.verbose)

@@ -535,12 +535,26 @@ fn test_valid_motion_non_binary_parses() {
 }
 
 #[test]
-fn test_non_binary_without_suggestion_returns_none() {
+fn test_non_binary_without_suggestion_parses() {
     let text = r#"---MOTION---
-{"motion": null, "rationale": "Cannot frame as binary", "proceed": false}
+{"motion": null, "rationale": "Nonsensical input", "proceed": false}
 ---END---"#;
-    // Suggestion is required when proceed is false — missing suggestion fails validation
-    assert!(validate_motion_response(text).is_none());
+    // No suggestion is valid for nonsensical input
+    let parsed = validate_motion_response(text);
+    assert!(parsed.is_some());
+    let parsed = parsed.unwrap();
+    assert!(!parsed.proceed);
+    assert!(parsed.suggestion.is_none());
+}
+
+#[test]
+fn test_meta_question_suggestion_rejected() {
+    let text = r#"---MOTION---
+{"motion": null, "rationale": "Not a question", "suggestion": "Could you rephrase this as a yes/no question?", "proceed": false}
+---END---"#;
+    let parsed = validate_motion_response(text).unwrap();
+    // Meta-questions are filtered out — suggestion should be None
+    assert!(parsed.suggestion.is_none());
 }
 
 #[test]

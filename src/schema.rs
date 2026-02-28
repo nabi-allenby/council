@@ -129,11 +129,8 @@ pub fn validate_motion_response(text: &str) -> Option<ParsedMotion> {
             .get("suggestion")
             .and_then(|v| v.as_str())
             .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty() && s.len() <= 500);
-        // Suggestion is required when proceed is false — fail validation to trigger retry
-        if suggestion.is_none() {
-            return None;
-        }
+            .filter(|s| !s.is_empty() && s.len() <= 500)
+            .filter(|s| is_votable_motion(s));
         Some(ParsedMotion {
             motion: None,
             rationale,
@@ -141,6 +138,24 @@ pub fn validate_motion_response(text: &str) -> Option<ParsedMotion> {
             proceed: false,
         })
     }
+}
+
+/// Check that a suggestion is a votable motion, not a meta-question asking the user to rephrase.
+fn is_votable_motion(s: &str) -> bool {
+    let lower = s.to_lowercase();
+    // Reject meta-questions that ask the user to do something
+    let meta_phrases = [
+        "rephrase",
+        "clarify",
+        "could you",
+        "can you",
+        "please provide",
+        "what do you mean",
+        "what did you mean",
+        "try again",
+        "be more specific",
+    ];
+    !meta_phrases.iter().any(|p| lower.contains(p))
 }
 
 pub fn strip_structured_block(text: &str) -> String {

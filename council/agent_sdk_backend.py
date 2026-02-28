@@ -1,6 +1,7 @@
 """Agent backend using the Claude Agent SDK for multi-turn tool use."""
 
 import asyncio
+import os
 from pathlib import Path
 
 from .schema import strip_structured_block, validate_discussion_response, validate_vote_response
@@ -106,7 +107,15 @@ class AgentSDKAgent:
 
     def _run_query(self, system: str, prompt: str) -> str:
         """Run a query through the Agent SDK and return the text response."""
-        return asyncio.run(self._async_query(system, prompt))
+        # The Agent SDK spawns a Claude Code subprocess. If we're already inside
+        # a Claude Code session, the CLAUDECODE env var triggers a nesting guard.
+        # Temporarily remove it so the subprocess can launch cleanly.
+        saved = os.environ.pop("CLAUDECODE", None)
+        try:
+            return asyncio.run(self._async_query(system, prompt))
+        finally:
+            if saved is not None:
+                os.environ["CLAUDECODE"] = saved
 
     async def _async_query(self, system: str, prompt: str) -> str:
         from claude_agent_sdk import (

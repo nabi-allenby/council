@@ -1,9 +1,11 @@
+use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process;
 
 use clap::Parser;
 
 use council::config::{load_config, Backend};
+use council::error::CouncilError;
 use council::orchestrator::Orchestrator;
 use council::output::format_decision_record;
 use council::report::save_report;
@@ -121,6 +123,32 @@ fn main() {
     // Run session
     let session = match orchestrator.run(&cli.question) {
         Ok(s) => s,
+        Err(CouncilError::NonBinaryQuestion {
+            rationale,
+            suggestion: Some(suggested),
+        }) => {
+            eprintln!("Your question is hard to frame as a binary vote.");
+            eprintln!("Reason: {}", rationale);
+            eprintln!("\nSuggested motion: {}", suggested);
+            eprint!("Use this motion? [y/N] ");
+            io::stderr().flush().ok();
+
+            let mut input = String::new();
+            io::stdin().read_line(&mut input).unwrap_or(0);
+
+            if input.trim().eq_ignore_ascii_case("y") {
+                match orchestrator.run_with_motion(&cli.question, suggested) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        eprintln!("Error during council discussion: {}", e);
+                        process::exit(1);
+                    }
+                }
+            } else {
+                eprintln!("Aborted. Rephrase your question or use --skip-motion.");
+                process::exit(1);
+            }
+        }
         Err(e) => {
             eprintln!("Error during council discussion: {}", e);
             process::exit(1);

@@ -89,10 +89,23 @@ impl Orchestrator {
                 self.log_motion(&motion, &parsed.rationale);
                 session.crafted_motion = Some(motion);
             } else {
-                return Err(CouncilError::NonBinaryQuestion(parsed.rationale));
+                return Err(CouncilError::NonBinaryQuestion {
+                    rationale: parsed.rationale,
+                    suggestion: parsed.suggestion,
+                });
             }
         }
 
+        self.run_session(session)
+    }
+
+    pub fn run_with_motion(&self, question: &str, motion: String) -> Result<Session, CouncilError> {
+        let mut session = Session::new(question.to_string());
+        session.crafted_motion = Some(motion);
+        self.run_session(session)
+    }
+
+    fn run_session(&self, mut session: Session) -> Result<Session, CouncilError> {
         // Discussion rounds
         for round_num in 1..=self.config.rounds {
             self.log_round(&round_num.to_string());

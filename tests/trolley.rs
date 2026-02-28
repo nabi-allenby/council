@@ -520,7 +520,7 @@ fn test_valid_motion_non_binary_parses() {
     let text = r#"This question has infinite answers.
 
 ---MOTION---
-{"motion": null, "rationale": "Infinite choices, no binary framing possible", "proceed": false}
+{"motion": null, "rationale": "Infinite choices, no binary framing possible", "suggestion": "Should we say the sky is blue?", "proceed": false}
 ---END---"#;
     let parsed = validate_motion_response(text);
     assert!(parsed.is_some());
@@ -528,6 +528,34 @@ fn test_valid_motion_non_binary_parses() {
     assert!(!parsed.proceed);
     assert!(parsed.motion.is_none());
     assert!(!parsed.rationale.is_empty());
+    assert_eq!(
+        parsed.suggestion.unwrap(),
+        "Should we say the sky is blue?"
+    );
+}
+
+#[test]
+fn test_non_binary_without_suggestion_parses() {
+    let text = r#"---MOTION---
+{"motion": null, "rationale": "Cannot frame as binary", "proceed": false}
+---END---"#;
+    let parsed = validate_motion_response(text);
+    assert!(parsed.is_some());
+    let parsed = parsed.unwrap();
+    assert!(!parsed.proceed);
+    assert!(parsed.suggestion.is_none());
+}
+
+#[test]
+fn test_proceed_true_ignores_suggestion() {
+    let text = r#"---MOTION---
+{"motion": "Should we do X?", "rationale": "test", "suggestion": "ignored", "proceed": true}
+---END---"#;
+    let parsed = validate_motion_response(text);
+    assert!(parsed.is_some());
+    let parsed = parsed.unwrap();
+    assert!(parsed.proceed);
+    assert!(parsed.suggestion.is_none());
 }
 
 #[test]
@@ -613,6 +641,23 @@ fn test_skip_motion_uses_original_question() {
 
     assert!(session.crafted_motion.is_none());
     assert_eq!(session.motion(), TROLLEY_QUESTION);
+}
+
+#[test]
+fn test_run_with_motion_sets_crafted_motion() {
+    let config = mock_config(1);
+    let orchestrator =
+        Orchestrator::with_agents(config, make_mock_agents(), &prompts_dir(), false, true);
+    let suggested = "Should we pull the lever to save five?".to_string();
+    let session = orchestrator
+        .run_with_motion(TROLLEY_QUESTION, suggested.clone())
+        .unwrap();
+
+    assert_eq!(session.crafted_motion.as_deref(), Some(suggested.as_str()));
+    assert_eq!(session.motion(), suggested);
+    assert_eq!(session.question, TROLLEY_QUESTION);
+    assert_eq!(session.turns.len(), 5);
+    assert_eq!(session.votes.len(), 5);
 }
 
 #[test]

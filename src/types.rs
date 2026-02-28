@@ -57,6 +57,7 @@ pub struct ParsedVote {
 pub struct ParsedMotion {
     pub motion: Option<String>,
     pub rationale: String,
+    pub suggestion: Option<String>,
     pub proceed: bool,
 }
 

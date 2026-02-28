@@ -118,15 +118,22 @@ pub fn validate_motion_response(text: &str) -> Option<ParsedMotion> {
         Some(ParsedMotion {
             motion: Some(motion),
             rationale,
+            suggestion: None,
             proceed: true,
         })
     } else {
         if rationale.is_empty() {
             return None;
         }
+        let suggestion = data
+            .get("suggestion")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty() && s.len() <= 500);
         Some(ParsedMotion {
             motion: None,
             rationale,
+            suggestion,
             proceed: false,
         })
     }

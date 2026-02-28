@@ -7,20 +7,21 @@ Five default roles — Architect, Sentinel, Steward, Mediator, Firebrand — eac
 ## Quick Start
 
 ```bash
-# Install
-pip install -e .
+# Build
+cargo build --release
 
-# Set your API key
-echo 'ANTHROPIC_API_KEY=your-key-here' > .env
+# Run (requires ANTHROPIC_API_KEY)
+export ANTHROPIC_API_KEY='your-key-here'
+./target/release/council "Should we rewrite the backend in Rust?"
 
-# Run
-python -m council "Should we rewrite the backend in Rust?"
+# Or with the agent-sdk backend (uses Claude CLI, no API key needed)
+./target/release/council -b agent-sdk "Should we rewrite the backend in Rust?"
 ```
 
 ## CLI Options
 
 ```
-python -m council <question> [options]
+council <question> [options]
 
   --verbose, -v          Show turns and votes during execution
   --rounds, -r INT       Discussion rounds, 1-3 (default: 3)
@@ -48,20 +49,20 @@ Edit `agents/council.json`:
 
 ### Backend Options
 
-| Backend | Description | Install |
-|---------|-------------|---------|
-| `api` (default) | Direct Anthropic Messages API. Lightweight, single-shot calls. | `pip install -e .` |
-| `agent-sdk` | Claude Agent SDK. Multi-turn tool use, MCP server support, built-in retries. | `pip install -e '.[agent-sdk]'` |
+| Backend | Description |
+|---------|-------------|
+| `api` (default) | Direct Anthropic Messages API. Requires `ANTHROPIC_API_KEY`. |
+| `agent-sdk` | Calls the `claude` CLI in print mode. No API key needed. |
 
-Both backends use the same personality files, config, and structured output validation. The `agent-sdk` backend is best when agents need richer tool use (web search with follow-up queries, MCP integrations).
+Both backends use the same personality files, config, and structured output validation.
 
 ## Project Structure
 
 ```
 agents/          Agent personality files (.md) and council.json config
-council/         Core library (orchestrator, agent, config, schema, prompt, report)
+src/             Rust source (orchestrator, agent, config, schema, prompt, report)
 prompts/         Round-specific and format prompt templates
-tests/           Test suite (pip install -e '.[dev]' for pytest)
+tests/           Integration tests (cargo test)
 docs/            In-depth research and design documentation
 logs/            Generated session reports (gitignored)
 ```
@@ -80,6 +81,5 @@ worktree setup
 ## Tests
 
 ```bash
-pip install -e '.[dev]'
-pytest tests/
+cargo test
 ```

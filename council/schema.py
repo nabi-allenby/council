@@ -6,7 +6,7 @@ from .types import ParsedResponse, ParsedVote
 
 def validate_discussion_response(text: str) -> ParsedResponse | None:
     """Extract and validate the ---RESPONSE--- block from agent output."""
-    match = re.search(r"---RESPONSE---\s*\n(.*?)---END---", text, re.DOTALL)
+    match = re.search(r"---RESPONSE---\s*(.*?)---END---", text, re.DOTALL)
     if not match:
         return None
 
@@ -53,7 +53,7 @@ def validate_discussion_response(text: str) -> ParsedResponse | None:
 
 def validate_vote_response(text: str) -> ParsedVote | None:
     """Extract and validate the ---VOTE--- block from agent output."""
-    match = re.search(r"---VOTE---\s*\n(.*?)---END---", text, re.DOTALL)
+    match = re.search(r"---VOTE---\s*(.*?)---END---", text, re.DOTALL)
     if not match:
         return None
 
@@ -78,9 +78,9 @@ def validate_vote_response(text: str) -> ParsedVote | None:
 def strip_structured_block(text: str) -> str:
     """Remove ---RESPONSE---...---END--- or ---VOTE---...---END--- from content."""
     text = re.sub(
-        r"\n*---RESPONSE---\s*\n.*?---END---\s*", "", text, flags=re.DOTALL
+        r"\n*---RESPONSE---\s*.*?---END---\s*", "", text, flags=re.DOTALL
     )
     text = re.sub(
-        r"\n*---VOTE---\s*\n.*?---END---\s*", "", text, flags=re.DOTALL
+        r"\n*---VOTE---\s*.*?---END---\s*", "", text, flags=re.DOTALL
     )
     return text.rstrip()

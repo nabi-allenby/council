@@ -132,7 +132,7 @@ def save_report(session: Session) -> Path:
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     slug = session.question[:40].lower()
     slug = "".join(c if c.isalnum() or c == " " else "" for c in slug)
-    slug = slug.strip().replace(" ", "-")
+    slug = slug.strip().replace(" ", "-") or "council"
 
     filename = f"{timestamp}-{slug}.md"
     path = LOGS_DIR / filename

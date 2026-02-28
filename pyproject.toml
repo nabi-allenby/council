@@ -5,6 +5,9 @@ description = "Turn-based council discussion & consensus system using Claude"
 requires-python = ">=3.11"
 dependencies = ["anthropic>=0.40", "python-dotenv>=1.0"]
 
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
 [build-system]
 requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"

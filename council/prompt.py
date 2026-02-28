@@ -9,7 +9,9 @@ def _load(name: str) -> str:
 
 def discussion_prompt(round_num: int, total_rounds: int) -> str:
     """Generate the system context for a discussion round."""
-    round_guidance = _load(f"round-{round_num}.md")
+    # Fall back to the last available round file (round-3.md) for rounds > 3
+    round_file = f"round-{min(round_num, 3)}.md"
+    round_guidance = _load(round_file)
     engagement = _load("engagement.md")
     brevity = _load("brevity.md")
     response_format = _load("response-format.md")

@@ -9,10 +9,14 @@ AGENTS_DIR = Path(__file__).resolve().parent.parent / "agents"
 CONFIG_FILE = "council.json"
 
 
+DEFAULT_MODEL = "claude-haiku-4-5-20251001"
+
+
 @dataclass
 class CouncilConfig:
     rotation: list[str]
     rounds: int = 3
+    model: str = DEFAULT_MODEL
     tools: dict[str, list[str]] = field(default_factory=dict)
 
 
@@ -25,14 +29,22 @@ def load_config(agents_dir: Path = AGENTS_DIR) -> CouncilConfig:
     data = json.loads(config_path.read_text())
 
     rotation = data.get("rotation")
-    if not isinstance(rotation, list) or len(rotation) < 2:
-        raise ValueError("Config 'rotation' must be a list of at least 2 agent names")
+    if not isinstance(rotation, list) or len(rotation) < 1:
+        raise ValueError("Config 'rotation' must be a list of at least 1 agent name")
     if not all(isinstance(r, str) for r in rotation):
         raise ValueError("Config 'rotation' entries must be strings")
+    if len(rotation) > 7:
+        raise ValueError("Config 'rotation' must have at most 7 agents")
+    if len(rotation) > 1 and len(rotation) % 2 == 0:
+        raise ValueError("Config 'rotation' must have an odd number of agents (or exactly 1)")
 
     rounds = data.get("rounds", 3)
-    if not isinstance(rounds, int) or rounds < 1:
-        raise ValueError("Config 'rounds' must be a positive integer")
+    if not isinstance(rounds, int) or rounds < 1 or rounds > 3:
+        raise ValueError("Config 'rounds' must be an integer between 1 and 3")
+
+    model = data.get("model", DEFAULT_MODEL)
+    if not isinstance(model, str) or not model.strip():
+        raise ValueError("Config 'model' must be a non-empty string")
 
     tools = data.get("tools", {})
     if not isinstance(tools, dict):
@@ -49,4 +61,4 @@ def load_config(agents_dir: Path = AGENTS_DIR) -> CouncilConfig:
         if role not in rotation:
             raise ValueError(f"Config 'tools' references unknown agent: {role}")
 
-    return CouncilConfig(rotation=rotation, rounds=rounds, tools=tools)
+    return CouncilConfig(rotation=rotation, rounds=rounds, model=model, tools=tools)

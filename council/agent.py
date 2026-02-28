@@ -5,7 +5,6 @@ import anthropic
 from .schema import strip_structured_block, validate_discussion_response, validate_vote_response
 from .types import Turn, Vote
 
-MODEL = "claude-haiku-4-5-20251001"
 MAX_TOKENS = 2048
 MAX_TOKENS_SEARCH = 4096
 
@@ -17,9 +16,10 @@ WEB_SEARCH_TOOL = {
 
 
 class Agent:
-    def __init__(self, role: str, personality_path: str, tools: list[str] | None = None):
+    def __init__(self, role: str, personality_path: str, model: str, tools: list[str] | None = None):
         self.role = role
         self.personality = Path(personality_path).read_text()
+        self.model = model
         self.tools = tools or []
         self.client = anthropic.Anthropic()
 
@@ -34,7 +34,7 @@ class Agent:
 
         use_search = "web_search" in self.tools
         api_kwargs: dict = {
-            "model": MODEL,
+            "model": self.model,
             "max_tokens": MAX_TOKENS_SEARCH if use_search else MAX_TOKENS,
             "system": system,
             "messages": messages,
@@ -85,7 +85,7 @@ class Agent:
         system = self.personality + "\n\n" + system_context
 
         api_kwargs: dict = {
-            "model": MODEL,
+            "model": self.model,
             "max_tokens": 512,
             "system": system,
             "messages": messages,

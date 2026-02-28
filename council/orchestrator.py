@@ -1,11 +1,9 @@
 from pathlib import Path
 
 from .agent import Agent
-from .config import CouncilConfig
+from .config import AGENTS_DIR, CouncilConfig
 from .prompt import discussion_prompt, vote_prompt
 from .types import Session, Turn, Vote
-
-AGENTS_DIR = Path(__file__).resolve().parent.parent / "agents"
 
 
 class Orchestrator:
@@ -21,13 +19,13 @@ class Orchestrator:
         if agents is not None:
             self.agents = agents
         else:
-            self.agents: dict[str, Agent] = {}
+            self.agents = {}
             for role in config.rotation:
                 path = agents_dir / f"{role}.md"
                 if not path.exists():
                     raise FileNotFoundError(f"Agent personality file not found: {path}")
                 tools = config.tools.get(role, [])
-                self.agents[role] = Agent(role, str(path), tools=tools)
+                self.agents[role] = Agent(role, str(path), model=config.model, tools=tools)
 
     def run(self, question: str) -> Session:
         session = Session(question=question)

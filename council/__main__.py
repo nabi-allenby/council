@@ -29,6 +29,10 @@ def main() -> None:
         help="Comma-separated agent rotation order (overrides config), e.g. architect,firebrand,steward"
     )
     parser.add_argument(
+        "--model", "-m", type=str, default=None,
+        help="Model name to use for all agents (overrides config)"
+    )
+    parser.add_argument(
         "--tools", type=str, default=None,
         help="Comma-separated agent:tool pairs (overrides config), e.g. architect:web_search,scout:web_search"
     )
@@ -55,6 +59,8 @@ def main() -> None:
     # Apply CLI overrides
     if args.rounds is not None:
         config.rounds = args.rounds
+    if args.model is not None:
+        config.model = args.model
     if args.rotation is not None:
         config.rotation = [r.strip() for r in args.rotation.split(",")]
     if args.tools is not None:

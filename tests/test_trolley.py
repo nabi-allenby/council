@@ -1,8 +1,11 @@
 """Tests for the council system using the trolley problem."""
 
+import os
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 from council.config import CouncilConfig
 from council.orchestrator import Orchestrator
@@ -246,6 +249,10 @@ def test_rotation_derived_from_session():
 # ── E2E test (real LLM calls, slow) ──
 
 
+@pytest.mark.skipif(
+    not os.environ.get("ANTHROPIC_API_KEY"),
+    reason="ANTHROPIC_API_KEY not set",
+)
 def test_trolley_e2e():
     """End-to-end: run council with real LLM calls. Requires ANTHROPIC_API_KEY."""
     result = subprocess.run(

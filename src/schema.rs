@@ -1,7 +1,7 @@
 use regex::Regex;
 use serde_json::Value;
 
-use crate::types::{ParsedResponse, ParsedVote, VoteChoice};
+use crate::types::{ParsedMotion, ParsedResponse, ParsedVote, VoteChoice};
 
 pub fn validate_discussion_response(text: &str) -> Option<ParsedResponse> {
     let re = Regex::new(r"(?s)---RESPONSE---\s*(.*?)---END---").unwrap();
@@ -94,10 +94,47 @@ pub fn validate_vote_response(text: &str) -> Option<ParsedVote> {
     })
 }
 
+pub fn validate_motion_response(text: &str) -> Option<ParsedMotion> {
+    let re = Regex::new(r"(?s)---MOTION---\s*(.*?)---END---").unwrap();
+    let caps = re.captures(text)?;
+    let json_str = caps.get(1)?.as_str().trim();
+
+    let data: Value = serde_json::from_str(json_str).ok()?;
+
+    let proceed = data.get("proceed")?.as_bool()?;
+
+    let rationale = data
+        .get("rationale")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+
+    if proceed {
+        let motion = data.get("motion")?.as_str()?.trim().to_string();
+        if motion.is_empty() {
+            return None;
+        }
+        Some(ParsedMotion {
+            motion: Some(motion),
+            rationale,
+            proceed: true,
+        })
+    } else {
+        Some(ParsedMotion {
+            motion: None,
+            rationale,
+            proceed: false,
+        })
+    }
+}
+
 pub fn strip_structured_block(text: &str) -> String {
     let re_response = Regex::new(r"(?s)\n*---RESPONSE---\s*.*?---END---\s*").unwrap();
     let text = re_response.replace_all(text, "");
     let re_vote = Regex::new(r"(?s)\n*---VOTE---\s*.*?---END---\s*").unwrap();
     let text = re_vote.replace_all(&text, "");
+    let re_motion = Regex::new(r"(?s)\n*---MOTION---\s*.*?---END---\s*").unwrap();
+    let text = re_motion.replace_all(&text, "");
     text.trim_end().to_string()
 }

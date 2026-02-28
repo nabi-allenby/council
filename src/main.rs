@@ -38,6 +38,10 @@ struct Cli {
     /// Agent backend: 'agent-sdk' (Claude CLI) or 'api' (direct Anthropic API)
     #[arg(short, long, value_parser = ["agent-sdk", "api"])]
     backend: Option<String>,
+
+    /// Skip motion crafting and use the original question directly
+    #[arg(long)]
+    skip_motion: bool,
 }
 
 fn main() {
@@ -106,7 +110,7 @@ fn main() {
 
     // Create orchestrator
     let orchestrator =
-        match Orchestrator::new(config, &agents_dir, &prompts_dir, cli.verbose) {
+        match Orchestrator::new(config, &agents_dir, &prompts_dir, cli.verbose, cli.skip_motion) {
             Ok(o) => o,
             Err(e) => {
                 eprintln!("Error: {}", e);

@@ -5,7 +5,8 @@ use crate::agent::{AgentBackend, Message, MAX_RETRIES_DEFAULT};
 use crate::api_backend::ApiAgent;
 use crate::config::{Backend, CouncilConfig};
 use crate::error::CouncilError;
-use crate::prompt::{discussion_prompt, vote_prompt};
+use crate::motion::craft_motion;
+use crate::prompt::{discussion_prompt, motion_prompt, vote_prompt};
 use crate::sdk_backend::SdkAgent;
 use crate::types::{Session, Turn, Vote};
 
@@ -13,6 +14,7 @@ pub struct Orchestrator {
     config: CouncilConfig,
     agents: HashMap<String, Box<dyn AgentBackend>>,
     verbose: bool,
+    skip_motion: bool,
     prompts_dir: PathBuf,
 }
 
@@ -22,6 +24,7 @@ impl Orchestrator {
         agents_dir: &Path,
         prompts_dir: &Path,
         verbose: bool,
+        skip_motion: bool,
     ) -> Result<Self, CouncilError> {
         let mut agents: HashMap<String, Box<dyn AgentBackend>> = HashMap::new();
 
@@ -51,6 +54,7 @@ impl Orchestrator {
             config,
             agents,
             verbose,
+            skip_motion,
             prompts_dir: prompts_dir.to_path_buf(),
         })
     }
@@ -60,17 +64,35 @@ impl Orchestrator {
         agents: HashMap<String, Box<dyn AgentBackend>>,
         prompts_dir: &Path,
         verbose: bool,
+        skip_motion: bool,
     ) -> Self {
         Orchestrator {
             config,
             agents,
             verbose,
+            skip_motion,
             prompts_dir: prompts_dir.to_path_buf(),
         }
     }
 
     pub fn run(&self, question: &str) -> Result<Session, CouncilError> {
         let mut session = Session::new(question.to_string());
+
+        // Motion crafting stage
+        if !self.skip_motion {
+            self.log_round("MOTION");
+            self.log_waiting("motion crafter", "crafting");
+            let system = motion_prompt(&self.prompts_dir)?;
+            let parsed = craft_motion(question, &system, &self.config.model, &self.config.backend)?;
+
+            if parsed.proceed {
+                let motion = parsed.motion.unwrap();
+                self.log_motion(&motion, &parsed.rationale);
+                session.crafted_motion = Some(motion);
+            } else {
+                return Err(CouncilError::NonBinaryQuestion(parsed.rationale));
+            }
+        }
 
         // Discussion rounds
         for round_num in 1..=self.config.rounds {
@@ -95,7 +117,7 @@ impl Orchestrator {
 
         // Vote phase
         self.log_round("VOTE");
-        let vote_ctx = vote_prompt(&self.prompts_dir, question)?;
+        let vote_ctx = vote_prompt(&self.prompts_dir, session.motion())?;
         let full_transcript = Self::build_full_transcript(&session);
 
         for role in &self.config.rotation {
@@ -120,7 +142,7 @@ impl Orchestrator {
     }
 
     fn build_transcript(session: &Session, current_round: u32, current_role: &str) -> String {
-        let mut parts = vec![format!("# Question\n\n{}", session.question)];
+        let mut parts = vec![format!("# Motion\n\n{}", session.motion())];
 
         let mut prev_round = 0;
         for turn in &session.turns {
@@ -154,7 +176,7 @@ impl Orchestrator {
 
     fn build_full_transcript(session: &Session) -> String {
         let mut parts = vec![
-            format!("# Question\n\n{}", session.question),
+            format!("# Motion\n\n{}", session.motion()),
             "# Full Discussion Transcript".to_string(),
         ];
 
@@ -207,6 +229,17 @@ impl Orchestrator {
                 eprintln!("Concerns: {:?}", turn.parsed.concerns);
             }
             eprintln!("{}\n", turn.content);
+        }
+    }
+
+    fn log_motion(&self, motion: &str, rationale: &str) {
+        if self.verbose {
+            eprintln!("--- Motion Crafted ---");
+            eprintln!("Motion: {}", motion);
+            if !rationale.is_empty() {
+                eprintln!("Rationale: {}", rationale);
+            }
+            eprintln!();
         }
     }
 

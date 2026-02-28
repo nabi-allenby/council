@@ -29,6 +29,10 @@ pub fn discussion_prompt(
     ))
 }
 
+pub fn motion_prompt(prompts_dir: &Path) -> Result<String, CouncilError> {
+    load(prompts_dir, "motion.md")
+}
+
 pub fn vote_prompt(prompts_dir: &Path, question: &str) -> Result<String, CouncilError> {
     let template = load(prompts_dir, "vote.md")?;
     let engagement = load(prompts_dir, "engagement.md")?;

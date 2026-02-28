@@ -6,10 +6,13 @@ use council::config::CouncilConfig;
 use council::error::CouncilError;
 use council::orchestrator::{title_case, Orchestrator};
 use council::output::format_decision_record;
-use council::prompt::{discussion_prompt, vote_prompt};
+use council::prompt::{discussion_prompt, motion_prompt, vote_prompt};
 use council::report::{generate_report, save_report};
-use council::schema::{strip_structured_block, validate_discussion_response, validate_vote_response};
-use council::types::{ParsedResponse, Turn, Vote, VoteChoice};
+use council::schema::{
+    strip_structured_block, validate_discussion_response, validate_motion_response,
+    validate_vote_response,
+};
+use council::types::{ParsedResponse, Session, Turn, Vote, VoteChoice};
 
 const TROLLEY_QUESTION: &str =
     "Should you pull the trolley lever to divert the train and save 5 people at the cost of 1?";
@@ -178,6 +181,7 @@ fn test_prompt_files_exist() {
         "round-2.md",
         "round-3.md",
         "vote.md",
+        "motion.md",
     ];
     for name in required {
         let path = dir.join(name);
@@ -282,7 +286,7 @@ fn test_strip_structured_block() {
 fn test_council_completes() {
     let config = mock_config(3);
     let orchestrator =
-        Orchestrator::with_agents(config, make_mock_agents(), &prompts_dir(), false);
+        Orchestrator::with_agents(config, make_mock_agents(), &prompts_dir(), false, true);
     let session = orchestrator.run(TROLLEY_QUESTION).unwrap();
 
     assert!(
@@ -297,7 +301,7 @@ fn test_council_completes() {
 fn test_council_single_round() {
     let config = mock_config(1);
     let orchestrator =
-        Orchestrator::with_agents(config, make_mock_agents(), &prompts_dir(), false);
+        Orchestrator::with_agents(config, make_mock_agents(), &prompts_dir(), false, true);
     let session = orchestrator.run(TROLLEY_QUESTION).unwrap();
 
     assert!(
@@ -312,7 +316,7 @@ fn test_council_single_round() {
 fn test_decision_record_format() {
     let config = mock_config(3);
     let orchestrator =
-        Orchestrator::with_agents(config, make_mock_agents(), &prompts_dir(), false);
+        Orchestrator::with_agents(config, make_mock_agents(), &prompts_dir(), false, true);
     let session = orchestrator.run(TROLLEY_QUESTION).unwrap();
     let record = format_decision_record(&session);
 
@@ -333,7 +337,7 @@ fn test_decision_record_format() {
 fn test_report_has_position_evolution() {
     let config = mock_config(3);
     let orchestrator =
-        Orchestrator::with_agents(config, make_mock_agents(), &prompts_dir(), false);
+        Orchestrator::with_agents(config, make_mock_agents(), &prompts_dir(), false, true);
     let session = orchestrator.run(TROLLEY_QUESTION).unwrap();
     let report = generate_report(&session);
 
@@ -347,7 +351,7 @@ fn test_report_has_position_evolution() {
 fn test_report_saves_to_disk() {
     let config = mock_config(3);
     let orchestrator =
-        Orchestrator::with_agents(config, make_mock_agents(), &prompts_dir(), false);
+        Orchestrator::with_agents(config, make_mock_agents(), &prompts_dir(), false, true);
     let session = orchestrator.run(TROLLEY_QUESTION).unwrap();
 
     let logs_dir = project_root().join("logs");
@@ -366,7 +370,7 @@ fn test_report_saves_to_disk() {
 fn test_motion_is_original_question() {
     let config = mock_config(3);
     let orchestrator =
-        Orchestrator::with_agents(config, make_mock_agents(), &prompts_dir(), false);
+        Orchestrator::with_agents(config, make_mock_agents(), &prompts_dir(), false, true);
     let session = orchestrator.run(TROLLEY_QUESTION).unwrap();
 
     assert_eq!(session.motion(), TROLLEY_QUESTION);
@@ -376,7 +380,7 @@ fn test_motion_is_original_question() {
 fn test_transcript_builds_incrementally() {
     let config = mock_config(3);
     let orchestrator =
-        Orchestrator::with_agents(config, make_mock_agents(), &prompts_dir(), false);
+        Orchestrator::with_agents(config, make_mock_agents(), &prompts_dir(), false, true);
     let session = orchestrator.run(TROLLEY_QUESTION).unwrap();
 
     // Round 1
@@ -400,7 +404,7 @@ fn test_transcript_builds_incrementally() {
 fn test_concerns_are_informational_only() {
     let config = mock_config(3);
     let orchestrator =
-        Orchestrator::with_agents(config, make_mock_agents(), &prompts_dir(), false);
+        Orchestrator::with_agents(config, make_mock_agents(), &prompts_dir(), false, true);
     let session = orchestrator.run(TROLLEY_QUESTION).unwrap();
 
     // Mock agents have concerns in rounds 1-2 but not round 3
@@ -423,7 +427,7 @@ fn test_concerns_are_informational_only() {
 fn test_rotation_derived_from_session() {
     let config = mock_config(3);
     let orchestrator =
-        Orchestrator::with_agents(config, make_mock_agents(), &prompts_dir(), false);
+        Orchestrator::with_agents(config, make_mock_agents(), &prompts_dir(), false, true);
     let session = orchestrator.run(TROLLEY_QUESTION).unwrap();
 
     let expected: Vec<String> = ROTATION.iter().map(|s| s.to_string()).collect();
@@ -442,7 +446,7 @@ fn test_config_default_backend_is_api() {
 fn test_orchestrator_creates_with_api_backend() {
     let mut config = mock_config(3);
     config.backend = council::config::Backend::Api;
-    let result = Orchestrator::new(config, &agents_dir(), &prompts_dir(), false);
+    let result = Orchestrator::new(config, &agents_dir(), &prompts_dir(), false, true);
     assert!(result.is_ok(), "Orchestrator should create with api backend");
 }
 
@@ -454,7 +458,7 @@ fn test_orchestrator_accepts_mock_agents() {
         ..CouncilConfig::default()
     };
     let orchestrator =
-        Orchestrator::with_agents(config, make_mock_agents(), &prompts_dir(), false);
+        Orchestrator::with_agents(config, make_mock_agents(), &prompts_dir(), false, true);
     let session = orchestrator.run(TROLLEY_QUESTION).unwrap();
 
     assert!(
@@ -465,10 +469,207 @@ fn test_orchestrator_accepts_mock_agents() {
     assert_eq!(session.votes.len(), 5);
 }
 
-// ── E2E test (real LLM calls, slow) ──
+// ── Motion crafting tests ──
+
+#[test]
+fn test_motion_prompt_file_exists() {
+    let path = prompts_dir().join("motion.md");
+    assert!(path.exists(), "Missing prompt file: motion.md");
+    let content = std::fs::read_to_string(&path).unwrap();
+    assert!(!content.trim().is_empty(), "Empty motion prompt file");
+    assert!(
+        content.contains("---MOTION---"),
+        "Motion prompt must reference ---MOTION--- format"
+    );
+}
+
+#[test]
+fn test_motion_prompt_loads() {
+    let dir = prompts_dir();
+    let prompt = motion_prompt(&dir).unwrap();
+    assert!(
+        prompt.contains("---MOTION---"),
+        "Motion prompt must reference ---MOTION--- format"
+    );
+    assert!(
+        prompt.contains("binary"),
+        "Motion prompt should mention binary framing"
+    );
+}
+
+#[test]
+fn test_valid_motion_proceed_parses() {
+    let text = r#"This is a clear binary question.
+
+---MOTION---
+{"motion": "Should we proceed with rewriting the backend in Rust?", "rationale": "Already a binary question, cleaned up", "proceed": true}
+---END---"#;
+    let parsed = validate_motion_response(text);
+    assert!(parsed.is_some());
+    let parsed = parsed.unwrap();
+    assert!(parsed.proceed);
+    assert_eq!(
+        parsed.motion.unwrap(),
+        "Should we proceed with rewriting the backend in Rust?"
+    );
+    assert!(!parsed.rationale.is_empty());
+}
+
+#[test]
+fn test_valid_motion_non_binary_parses() {
+    let text = r#"This question has infinite answers.
+
+---MOTION---
+{"motion": null, "rationale": "Infinite choices, no binary framing possible", "proceed": false}
+---END---"#;
+    let parsed = validate_motion_response(text);
+    assert!(parsed.is_some());
+    let parsed = parsed.unwrap();
+    assert!(!parsed.proceed);
+    assert!(parsed.motion.is_none());
+    assert!(!parsed.rationale.is_empty());
+}
+
+#[test]
+fn test_missing_motion_block_returns_none() {
+    assert!(validate_motion_response("Just some text").is_none());
+}
+
+#[test]
+fn test_invalid_motion_json_returns_none() {
+    let text = "---MOTION---\n{bad json}\n---END---";
+    assert!(validate_motion_response(text).is_none());
+}
+
+#[test]
+fn test_motion_empty_text_returns_none() {
+    let text = r#"---MOTION---
+{"motion": "", "rationale": "test", "proceed": true}
+---END---"#;
+    assert!(validate_motion_response(text).is_none());
+}
+
+#[test]
+fn test_strip_structured_block_handles_motion() {
+    let text = "Analysis here.\n\n---MOTION---\n{\"motion\": \"x\"}\n---END---";
+    let stripped = strip_structured_block(text);
+    assert!(!stripped.contains("---MOTION---"));
+    assert!(stripped.contains("Analysis here."));
+}
+
+#[test]
+fn test_session_motion_returns_question_when_no_crafted_motion() {
+    let session = Session::new("Original question?".to_string());
+    assert_eq!(session.motion(), "Original question?");
+}
+
+#[test]
+fn test_session_motion_returns_crafted_motion() {
+    let mut session = Session::new("How should we do auth?".to_string());
+    session.crafted_motion = Some("Should we adopt JWT-based authentication?".to_string());
+    assert_eq!(session.motion(), "Should we adopt JWT-based authentication?");
+}
+
+#[test]
+fn test_skip_motion_uses_original_question() {
+    let config = mock_config(1);
+    let orchestrator =
+        Orchestrator::with_agents(config, make_mock_agents(), &prompts_dir(), false, true);
+    let session = orchestrator.run(TROLLEY_QUESTION).unwrap();
+
+    assert!(session.crafted_motion.is_none());
+    assert_eq!(session.motion(), TROLLEY_QUESTION);
+}
+
+#[test]
+fn test_decision_record_shows_motion() {
+    let config = mock_config(1);
+    let orchestrator =
+        Orchestrator::with_agents(config, make_mock_agents(), &prompts_dir(), false, true);
+    let mut session = orchestrator.run(TROLLEY_QUESTION).unwrap();
+    session.crafted_motion = Some("Should we pull the lever?".to_string());
+
+    let record = format_decision_record(&session);
+    assert!(
+        record.contains("Should we pull the lever?"),
+        "Decision record should show crafted motion"
+    );
+    assert!(
+        record.contains("Original question:"),
+        "Decision record should show original question label"
+    );
+}
+
+#[test]
+fn test_report_shows_motion_section() {
+    let config = mock_config(1);
+    let orchestrator =
+        Orchestrator::with_agents(config, make_mock_agents(), &prompts_dir(), false, true);
+    let mut session = orchestrator.run(TROLLEY_QUESTION).unwrap();
+    session.crafted_motion = Some("Should we pull the lever?".to_string());
+
+    let report = generate_report(&session);
+    assert!(
+        report.contains("## Motion"),
+        "Report should have a Motion section when motion was crafted"
+    );
+    assert!(
+        report.contains("Should we pull the lever?"),
+        "Report should contain crafted motion"
+    );
+}
+
+#[test]
+fn test_report_no_motion_section_when_skipped() {
+    let config = mock_config(1);
+    let orchestrator =
+        Orchestrator::with_agents(config, make_mock_agents(), &prompts_dir(), false, true);
+    let session = orchestrator.run(TROLLEY_QUESTION).unwrap();
+
+    let report = generate_report(&session);
+    assert!(
+        !report.contains("## Motion"),
+        "Report should not have a Motion section when motion was skipped"
+    );
+}
+
+// ── E2E tests (real LLM calls, slow) ──
 
 #[test]
 fn test_trolley_e2e() {
+    if std::env::var("ANTHROPIC_API_KEY").is_err() {
+        eprintln!("Skipping E2E test: ANTHROPIC_API_KEY not set");
+        return;
+    }
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_council"))
+        .args(["--rounds", "1", "--skip-motion", TROLLEY_QUESTION])
+        .current_dir(project_root())
+        .output()
+        .expect("Failed to run council binary");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "Council crashed:\n{}",
+        stderr
+    );
+    assert!(
+        stdout.contains("Outcome: APPROVED") || stdout.contains("Outcome: REJECTED"),
+        "Missing outcome in stdout:\n{}",
+        stdout
+    );
+    assert!(
+        stdout.contains("Full report saved to:"),
+        "Missing report path in stdout:\n{}",
+        stdout
+    );
+}
+
+#[test]
+fn test_motion_crafting_e2e() {
     if std::env::var("ANTHROPIC_API_KEY").is_err() {
         eprintln!("Skipping E2E test: ANTHROPIC_API_KEY not set");
         return;
@@ -491,11 +692,6 @@ fn test_trolley_e2e() {
     assert!(
         stdout.contains("Outcome: APPROVED") || stdout.contains("Outcome: REJECTED"),
         "Missing outcome in stdout:\n{}",
-        stdout
-    );
-    assert!(
-        stdout.contains("Full report saved to:"),
-        "Missing report path in stdout:\n{}",
         stdout
     );
 }

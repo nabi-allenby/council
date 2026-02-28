@@ -15,14 +15,17 @@ pub fn format_decision_record(session: &Session) -> String {
         .collect();
 
     let mut sections = vec![
-        format!("# Council Decision: {}", session.question),
-        format!(
-            "**Outcome: {}** ({}-{})",
-            outcome.upper(),
-            yays.len(),
-            nays.len()
-        ),
+        format!("# Council Decision: {}", session.motion()),
     ];
+    if session.crafted_motion.is_some() {
+        sections.push(format!("*Original question: {}*", session.question));
+    }
+    sections.push(format!(
+        "**Outcome: {}** ({}-{})",
+        outcome.upper(),
+        yays.len(),
+        nays.len()
+    ));
 
     // Vote breakdown
     let vote_lines: Vec<String> = session

@@ -54,6 +54,13 @@ pub struct ParsedVote {
 }
 
 #[derive(Debug, Clone)]
+pub struct ParsedMotion {
+    pub motion: Option<String>,
+    pub rationale: String,
+    pub proceed: bool,
+}
+
+#[derive(Debug, Clone)]
 pub struct Turn {
     pub agent: String,
     pub round: u32,
@@ -71,6 +78,7 @@ pub struct Vote {
 #[derive(Debug, Clone)]
 pub struct Session {
     pub question: String,
+    pub crafted_motion: Option<String>,
     pub turns: Vec<Turn>,
     pub votes: Vec<Vote>,
 }
@@ -79,6 +87,7 @@ impl Session {
     pub fn new(question: String) -> Self {
         Session {
             question,
+            crafted_motion: None,
             turns: Vec::new(),
             votes: Vec::new(),
         }
@@ -99,7 +108,7 @@ impl Session {
     }
 
     pub fn motion(&self) -> &str {
-        &self.question
+        self.crafted_motion.as_deref().unwrap_or(&self.question)
     }
 
     pub fn rotation(&self) -> Vec<String> {

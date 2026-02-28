@@ -85,8 +85,7 @@ impl Orchestrator {
             let system = motion_prompt(&self.prompts_dir)?;
             let parsed = craft_motion(question, &system, &self.config.model, &self.config.backend)?;
 
-            if parsed.proceed {
-                let motion = parsed.motion.unwrap();
+            if let Some(motion) = parsed.motion {
                 self.log_motion(&motion, &parsed.rationale);
                 session.crafted_motion = Some(motion);
             } else {

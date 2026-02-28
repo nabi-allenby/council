@@ -550,6 +550,40 @@ fn test_motion_empty_text_returns_none() {
 }
 
 #[test]
+fn test_motion_too_long_returns_none() {
+    let long_motion = "x".repeat(501);
+    let text = format!(
+        "---MOTION---\n{{\"motion\": \"{}\", \"rationale\": \"test\", \"proceed\": true}}\n---END---",
+        long_motion
+    );
+    assert!(validate_motion_response(&text).is_none());
+}
+
+#[test]
+fn test_motion_non_binary_empty_rationale_returns_none() {
+    let text = r#"---MOTION---
+{"motion": null, "rationale": "", "proceed": false}
+---END---"#;
+    assert!(validate_motion_response(text).is_none());
+}
+
+#[test]
+fn test_motion_null_motion_with_proceed_true_returns_none() {
+    let text = r#"---MOTION---
+{"motion": null, "rationale": "test", "proceed": true}
+---END---"#;
+    assert!(validate_motion_response(text).is_none());
+}
+
+#[test]
+fn test_motion_missing_proceed_returns_none() {
+    let text = r#"---MOTION---
+{"motion": "Should we do X?", "rationale": "test"}
+---END---"#;
+    assert!(validate_motion_response(text).is_none());
+}
+
+#[test]
 fn test_strip_structured_block_handles_motion() {
     let text = "Analysis here.\n\n---MOTION---\n{\"motion\": \"x\"}\n---END---";
     let stripped = strip_structured_block(text);
@@ -692,6 +726,11 @@ fn test_motion_crafting_e2e() {
     assert!(
         stdout.contains("Outcome: APPROVED") || stdout.contains("Outcome: REJECTED"),
         "Missing outcome in stdout:\n{}",
+        stdout
+    );
+    assert!(
+        stdout.contains("Original question:"),
+        "Motion crafting should produce an 'Original question:' line when the motion differs:\n{}",
         stdout
     );
 }

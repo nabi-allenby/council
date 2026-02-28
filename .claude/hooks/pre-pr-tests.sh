@@ -22,21 +22,8 @@ fi
 
 echo "Pre-PR hook: running test suite before creating PR..." >&2
 
-# Find a working python with pytest installed
-VENV_PYTHON="$PROJECT_DIR/.venv/bin/python"
-if [ -x "$VENV_PYTHON" ] && "$VENV_PYTHON" -m pytest --version >/dev/null 2>&1; then
-  PYTHON="$VENV_PYTHON"
-elif command -v python3 >/dev/null 2>&1 && python3 -m pytest --version >/dev/null 2>&1; then
-  PYTHON="python3"
-elif [ -x /tmp/council-test-venv/bin/python ]; then
-  PYTHON="/tmp/council-test-venv/bin/python"
-else
-  echo "WARNING: pytest not found — skipping pre-PR tests." >&2
-  exit 0
-fi
-
-# Run tests (exclude E2E / LLM tests)
-TEST_OUTPUT=$("$PYTHON" -m pytest "$PROJECT_DIR/tests/" -x -q -k "not e2e" 2>&1) || {
+# Run Rust tests (exclude E2E / LLM tests)
+TEST_OUTPUT=$(cargo test --manifest-path "$PROJECT_DIR/Cargo.toml" -- --skip e2e 2>&1) || {
   echo "BLOCKED: tests failed. Fix the failures before creating a PR." >&2
   echo "" >&2
   echo "$TEST_OUTPUT" >&2

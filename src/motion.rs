@@ -14,11 +14,6 @@ const API_URL: &str = "https://api.anthropic.com/v1/messages";
 const API_VERSION: &str = "2023-06-01";
 const MAX_RETRIES: u32 = 1;
 
-pub struct MotionResult {
-    pub motion: String,
-    pub rationale: String,
-}
-
 fn call_api(system: &str, messages: &[(String, String)], model: &str) -> Result<String, CouncilError> {
     let api_key = std::env::var("ANTHROPIC_API_KEY")
         .map_err(|_| CouncilError::ApiError("ANTHROPIC_API_KEY not set".into()))?;

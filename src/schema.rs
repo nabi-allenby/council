@@ -112,7 +112,7 @@ pub fn validate_motion_response(text: &str) -> Option<ParsedMotion> {
 
     if proceed {
         let motion = data.get("motion")?.as_str()?.trim().to_string();
-        if motion.is_empty() {
+        if motion.is_empty() || motion.len() > 500 {
             return None;
         }
         Some(ParsedMotion {
@@ -121,6 +121,9 @@ pub fn validate_motion_response(text: &str) -> Option<ParsedMotion> {
             proceed: true,
         })
     } else {
+        if rationale.is_empty() {
+            return None;
+        }
         Some(ParsedMotion {
             motion: None,
             rationale,

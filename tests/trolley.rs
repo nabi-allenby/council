@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use council::agent::{AgentBackend, Message};
-use council::config::{Backend, CouncilConfig};
+use council::config::CouncilConfig;
 use council::error::CouncilError;
 use council::orchestrator::{title_case, Orchestrator};
 use council::output::format_decision_record;
@@ -433,48 +433,24 @@ fn test_rotation_derived_from_session() {
 // ── Backend config tests ──
 
 #[test]
-fn test_config_default_backend_is_agent_sdk() {
+fn test_config_default_backend_is_api() {
     let config = mock_config(3);
-    assert_eq!(config.backend, Backend::AgentSdk);
+    assert_eq!(config.backend, council::config::Backend::Api);
 }
 
 #[test]
-fn test_config_accepts_valid_backends() {
-    for backend in [Backend::Api, Backend::AgentSdk] {
-        let config = CouncilConfig {
-            rotation: ROTATION.iter().map(|s| s.to_string()).collect(),
-            backend: backend.clone(),
-            ..CouncilConfig::default()
-        };
-        assert_eq!(config.backend, backend);
-    }
-}
-
-#[test]
-fn test_config_backend_field_exists() {
-    let config = CouncilConfig {
-        rotation: ROTATION.iter().map(|s| s.to_string()).collect(),
-        backend: Backend::AgentSdk,
-        ..CouncilConfig::default()
-    };
-    assert_eq!(config.backend, Backend::AgentSdk);
-}
-
-#[test]
-fn test_orchestrator_uses_sdk_backend_by_default() {
-    let config = mock_config(3);
-    // This creates real SdkAgent instances (reading personality files)
-    // No API key needed since the SDK backend uses the claude CLI
+fn test_orchestrator_creates_with_api_backend() {
+    let mut config = mock_config(3);
+    config.backend = council::config::Backend::Api;
     let result = Orchestrator::new(config, &agents_dir(), &prompts_dir(), false);
-    assert!(result.is_ok(), "Orchestrator should create with agent-sdk backend");
+    assert!(result.is_ok(), "Orchestrator should create with api backend");
 }
 
 #[test]
-fn test_orchestrator_accepts_mock_agents_with_agent_sdk_backend() {
+fn test_orchestrator_accepts_mock_agents() {
     let config = CouncilConfig {
         rotation: ROTATION.iter().map(|s| s.to_string()).collect(),
         rounds: 1,
-        backend: Backend::AgentSdk,
         ..CouncilConfig::default()
     };
     let orchestrator =

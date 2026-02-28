@@ -16,11 +16,7 @@ pub struct SdkAgent {
 }
 
 impl SdkAgent {
-    pub fn new(
-        role: &str,
-        personality_path: &Path,
-        model: &str,
-    ) -> Result<Self, CouncilError> {
+    pub fn new(role: &str, personality_path: &Path, model: &str) -> Result<Self, CouncilError> {
         let personality = fs::read_to_string(personality_path).map_err(|_| {
             CouncilError::FileNotFound(format!(
                 "Personality file not found: {}",
@@ -39,15 +35,12 @@ impl SdkAgent {
         let prompt = Self::flatten_messages(messages);
 
         let output = Command::new("claude")
-            .arg("-p")
-            .arg("--output-format")
-            .arg("text")
+            .arg("--print")
             .arg("--model")
             .arg(&self.model)
             .arg("--system-prompt")
             .arg(system)
-            .arg("--max-turns")
-            .arg("1")
+            .arg("--")
             .arg(&prompt)
             .env_remove("CLAUDECODE")
             .output()
@@ -56,15 +49,13 @@ impl SdkAgent {
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(CouncilError::ApiError(format!(
-                "claude CLI failed: {}",
-                stderr
+                "claude CLI exited with {}: {}",
+                output.status, stderr
             )));
         }
 
-        let text = String::from_utf8_lossy(&output.stdout)
-            .trim()
-            .to_string();
-        Ok(normalize_text(&text))
+        let text = String::from_utf8_lossy(&output.stdout).to_string();
+        Ok(normalize_text(text.trim()))
     }
 
     fn flatten_messages(messages: &[Message]) -> String {

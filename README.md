@@ -10,12 +10,12 @@ Five default roles — Architect, Sentinel, Steward, Mediator, Firebrand — eac
 # Build
 cargo build --release
 
-# Run (uses Claude CLI via agent-sdk backend by default)
+# Run (requires ANTHROPIC_API_KEY)
+export ANTHROPIC_API_KEY='your-key-here'
 ./target/release/council "Should we rewrite the backend in Rust?"
 
-# Or with the direct API backend
-export ANTHROPIC_API_KEY='your-key-here'
-./target/release/council -b api "Should we rewrite the backend in Rust?"
+# Or with the agent-sdk backend (uses Claude CLI, no API key needed)
+./target/release/council -b agent-sdk "Should we rewrite the backend in Rust?"
 ```
 
 ## CLI Options
@@ -28,7 +28,7 @@ council <question> [options]
   --model, -m NAME       Model for all agents (default: claude-haiku-4-5-20251001)
   --rotation AGENTS      Comma-separated agent order, e.g. architect,sentinel,steward
   --tools PAIRS          Agent:tool pairs, e.g. architect:web_search
-  --backend, -b BACKEND  Agent backend: 'agent-sdk' or 'api' (default: agent-sdk)
+  --backend, -b BACKEND  Agent backend: 'api' or 'agent-sdk' (default: api)
 ```
 
 ## Configuration
@@ -40,7 +40,7 @@ Edit `agents/council.json`:
   "rotation": ["architect", "sentinel", "steward", "mediator", "firebrand"],
   "rounds": 3,
   "model": "claude-haiku-4-5-20251001",
-  "backend": "agent-sdk",
+  "backend": "api",
   "tools": { "architect": ["web_search"] }
 }
 ```
@@ -51,8 +51,8 @@ Edit `agents/council.json`:
 
 | Backend | Description |
 |---------|-------------|
-| `agent-sdk` (default) | Calls the `claude` CLI in print mode. No API key needed. |
-| `api` | Direct Anthropic Messages API. Requires `ANTHROPIC_API_KEY`. |
+| `api` (default) | Direct Anthropic Messages API. Requires `ANTHROPIC_API_KEY`. |
+| `agent-sdk` | Calls the `claude` CLI in print mode. No API key needed. |
 
 Both backends use the same personality files, config, and structured output validation.
 

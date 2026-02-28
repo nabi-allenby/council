@@ -309,35 +309,3 @@ def test_trolley_e2e():
     assert "Full report saved to:" in result.stdout
 
 
-if __name__ == "__main__":
-    tests = [
-        test_prompt_files_exist,
-        test_discussion_prompt_loads,
-        test_vote_prompt_loads,
-        test_valid_response_parses,
-        test_missing_response_block_returns_none,
-        test_invalid_json_returns_none,
-        test_valid_vote_parses,
-        test_invalid_vote_value_returns_none,
-        test_strip_structured_block,
-        test_council_completes,
-        test_council_single_round,
-        test_decision_record_format,
-        test_report_has_position_evolution,
-        test_report_saves_to_disk,
-        test_motion_is_original_question,
-        test_transcript_builds_incrementally,
-        test_concerns_are_informational_only,
-        test_rotation_derived_from_session,
-        test_config_default_backend_is_api,
-        test_config_accepts_valid_backends,
-        test_config_backend_field_exists,
-        test_orchestrator_uses_api_backend_by_default,
-        test_orchestrator_accepts_mock_agents_with_agent_sdk_backend,
-    ]
-
-    print("Running mock tests...")
-    for t in tests:
-        t()
-        print(f"  {t.__name__} PASS")
-    print(f"\nAll {len(tests)} mock tests passed!")

@@ -1,3 +1,7 @@
+"""Concise decision output for stdout."""
+
+from __future__ import annotations
+
 from .types import Session
 
 
@@ -32,33 +36,3 @@ def format_decision_record(session: Session) -> str:
     return "\n\n".join(sections)
 
 
-def format_transcript(session: Session) -> str:
-    """Full deliberation record."""
-    parts = ["## Full Transcript"]
-
-    prev_round = 0
-    for i, turn in enumerate(session.turns, 1):
-        if turn.round != prev_round:
-            prev_round = turn.round
-            parts.append(f"### Round {prev_round}")
-
-        header = f"#### Turn {i}: {turn.agent.title()}"
-        parts.append(header)
-        parts.append(f"**Position:** {turn.parsed.position}")
-        if turn.parsed.concerns:
-            parts.append(f"**Concerns:** {'; '.join(turn.parsed.concerns)}")
-        if turn.parsed.updated_by:
-            parts.append(
-                f"**Influenced by:** "
-                f"{', '.join(t.title() for t in turn.parsed.updated_by)}"
-            )
-        parts.append(turn.content)
-        parts.append("---")
-
-    # Vote section
-    parts.append("### Vote Results")
-    for v in session.votes:
-        icon = "Y" if v.vote == "yay" else "N"
-        parts.append(f"- [{icon}] **{v.agent.title()}**: {v.reason}")
-
-    return "\n\n".join(parts)

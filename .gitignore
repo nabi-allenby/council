@@ -32,3 +32,5 @@ build/
 logs/*
 logs/
 .claude
+!.claude/settings.json
+!.claude/hooks/

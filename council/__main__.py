@@ -36,6 +36,10 @@ def main() -> None:
         "--tools", type=str, default=None,
         help="Comma-separated agent:tool pairs (overrides config), e.g. architect:web_search,scout:web_search"
     )
+    parser.add_argument(
+        "--backend", "-b", type=str, default=None, choices=["api", "agent-sdk"],
+        help="Agent backend: 'api' (direct Anthropic API) or 'agent-sdk' (Claude Agent SDK)"
+    )
     args = parser.parse_args()
 
     if not os.environ.get("ANTHROPIC_API_KEY"):
@@ -68,6 +72,8 @@ def main() -> None:
         for pair in args.tools.split(","):
             agent, tool = pair.strip().split(":")
             config.tools.setdefault(agent.strip(), []).append(tool.strip())
+    if args.backend is not None:
+        config.backend = args.backend
 
     try:
         orchestrator = Orchestrator(config=config, verbose=args.verbose)

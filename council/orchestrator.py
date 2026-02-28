@@ -6,6 +6,14 @@ from .prompt import discussion_prompt, vote_prompt
 from .types import Session, Turn, Vote
 
 
+def _make_agent(role: str, path: str, model: str, tools: list[str], backend: str):
+    """Create an agent using the configured backend."""
+    if backend == "agent-sdk":
+        from .agent_sdk_backend import AgentSDKAgent
+        return AgentSDKAgent(role, path, model=model, tools=tools)
+    return Agent(role, path, model=model, tools=tools)
+
+
 class Orchestrator:
     def __init__(
         self,
@@ -25,7 +33,9 @@ class Orchestrator:
                 if not path.exists():
                     raise FileNotFoundError(f"Agent personality file not found: {path}")
                 tools = config.tools.get(role, [])
-                self.agents[role] = Agent(role, str(path), model=config.model, tools=tools)
+                self.agents[role] = _make_agent(
+                    role, str(path), model=config.model, tools=tools, backend=config.backend,
+                )
 
     def run(self, question: str) -> Session:
         session = Session(question=question)

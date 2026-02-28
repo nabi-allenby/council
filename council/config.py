@@ -10,6 +10,7 @@ CONFIG_FILE = "council.json"
 
 
 DEFAULT_MODEL = "claude-haiku-4-5-20251001"
+VALID_BACKENDS = ("api", "agent-sdk")
 
 
 @dataclass
@@ -18,6 +19,7 @@ class CouncilConfig:
     rounds: int = 3
     model: str = DEFAULT_MODEL
     tools: dict[str, list[str]] = field(default_factory=dict)
+    backend: str = "api"
 
 
 def load_config(agents_dir: Path = AGENTS_DIR) -> CouncilConfig:
@@ -46,6 +48,10 @@ def load_config(agents_dir: Path = AGENTS_DIR) -> CouncilConfig:
     if not isinstance(model, str) or not model.strip():
         raise ValueError("Config 'model' must be a non-empty string")
 
+    backend = data.get("backend", "api")
+    if backend not in VALID_BACKENDS:
+        raise ValueError(f"Config 'backend' must be one of {VALID_BACKENDS}, got: {backend!r}")
+
     tools = data.get("tools", {})
     if not isinstance(tools, dict):
         raise ValueError("Config 'tools' must be a mapping of agent name to tool list")
@@ -61,4 +67,4 @@ def load_config(agents_dir: Path = AGENTS_DIR) -> CouncilConfig:
         if role not in rotation:
             raise ValueError(f"Config 'tools' references unknown agent: {role}")
 
-    return CouncilConfig(rotation=rotation, rounds=rounds, model=model, tools=tools)
+    return CouncilConfig(rotation=rotation, rounds=rounds, model=model, tools=tools, backend=backend)

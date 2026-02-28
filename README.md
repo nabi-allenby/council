@@ -27,6 +27,7 @@ python -m council <question> [options]
   --model, -m NAME       Model for all agents (default: claude-haiku-4-5-20251001)
   --rotation AGENTS      Comma-separated agent order, e.g. architect,sentinel,steward
   --tools PAIRS          Agent:tool pairs, e.g. architect:web_search
+  --backend, -b BACKEND  Agent backend: 'api' or 'agent-sdk' (default: api)
 ```
 
 ## Configuration
@@ -38,11 +39,21 @@ Edit `agents/council.json`:
   "rotation": ["architect", "sentinel", "steward", "mediator", "firebrand"],
   "rounds": 3,
   "model": "claude-haiku-4-5-20251001",
+  "backend": "api",
   "tools": { "architect": ["web_search"] }
 }
 ```
 
 **Constraints:** 1-7 agents (odd count, or exactly 1), 1-3 rounds. Each agent needs a matching `agents/<name>.md` personality file.
+
+### Backend Options
+
+| Backend | Description | Install |
+|---------|-------------|---------|
+| `api` (default) | Direct Anthropic Messages API. Lightweight, single-shot calls. | `pip install -e .` |
+| `agent-sdk` | Claude Agent SDK. Multi-turn tool use, MCP server support, built-in retries. | `pip install -e '.[agent-sdk]'` |
+
+Both backends use the same personality files, config, and structured output validation. The `agent-sdk` backend is best when agents need richer tool use (web search with follow-up queries, MCP integrations).
 
 ## Project Structure
 

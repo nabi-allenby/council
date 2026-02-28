@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from council.config import CouncilConfig
+from council.config import CouncilConfig, VALID_BACKENDS
 from council.orchestrator import Orchestrator
 from council.output import format_decision_record
 from council.report import generate_report, save_report
@@ -246,6 +246,48 @@ def test_rotation_derived_from_session():
     assert session.rotation == ROTATION
 
 
+# ── Backend config tests ──
+
+
+def test_config_default_backend_is_api():
+    """Default backend is 'api' when not specified."""
+    config = _mock_config()
+    assert config.backend == "api"
+
+
+def test_config_accepts_valid_backends():
+    """Both 'api' and 'agent-sdk' are valid backend values."""
+    for backend in VALID_BACKENDS:
+        config = CouncilConfig(rotation=ROTATION, backend=backend)
+        assert config.backend == backend
+
+
+def test_config_backend_field_exists():
+    """CouncilConfig has a backend field."""
+    config = CouncilConfig(rotation=ROTATION, backend="agent-sdk")
+    assert config.backend == "agent-sdk"
+
+
+def test_orchestrator_uses_api_backend_by_default():
+    """Orchestrator creates Agent instances when backend is 'api'."""
+    from council.agent import Agent
+    config = _mock_config()
+    orchestrator = Orchestrator(config=config)
+    for agent in orchestrator.agents.values():
+        assert isinstance(agent, Agent)
+
+
+def test_orchestrator_accepts_mock_agents_with_agent_sdk_backend():
+    """Orchestrator works with injected mock agents regardless of backend setting."""
+    config = CouncilConfig(rotation=ROTATION, rounds=1, backend="agent-sdk")
+    orchestrator = Orchestrator(config=config, agents=make_mock_agents())
+    session = orchestrator.run(TROLLEY_QUESTION)
+
+    assert session.outcome in ("approved", "rejected")
+    assert len(session.turns) == 5
+    assert len(session.votes) == 5
+
+
 # ── E2E test (real LLM calls, slow) ──
 
 
@@ -287,6 +329,11 @@ if __name__ == "__main__":
         test_transcript_builds_incrementally,
         test_concerns_are_informational_only,
         test_rotation_derived_from_session,
+        test_config_default_backend_is_api,
+        test_config_accepts_valid_backends,
+        test_config_backend_field_exists,
+        test_orchestrator_uses_api_backend_by_default,
+        test_orchestrator_accepts_mock_agents_with_agent_sdk_backend,
     ]
 
     print("Running mock tests...")

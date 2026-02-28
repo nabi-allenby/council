@@ -35,7 +35,7 @@ pub fn normalize_text(text: &str) -> String {
     result
 }
 
-pub trait AgentBackend {
+pub trait AgentBackend: Send + Sync {
     fn role(&self) -> &str;
 
     fn respond(

@@ -72,46 +72,102 @@ impl Orchestrator {
     pub fn run(&self, question: &str) -> Result<Session, CouncilError> {
         let mut session = Session::new(question.to_string());
 
-        // Discussion rounds
+        // Discussion rounds (agents within a round run in parallel)
         for round_num in 1..=self.config.rounds {
             self.log_round(&round_num.to_string());
             let system_ctx =
                 discussion_prompt(&self.prompts_dir, round_num, self.config.rounds)?;
 
+            // Build shared transcript (contains only turns from previous rounds)
+            let base_transcript = Self::build_round_transcript(&session);
+
             for role in &self.config.rotation {
                 self.log_waiting(role, "thinking");
-                let transcript = Self::build_transcript(&session, round_num, role);
-                let messages = vec![Message {
-                    role: "user".to_string(),
-                    content: transcript,
-                }];
+            }
 
-                let agent = self.agents.get(role).unwrap();
-                let turn = agent.respond(round_num, &system_ctx, &messages, MAX_RETRIES_DEFAULT)?;
+            let turns = std::thread::scope(|s| {
+                let handles: Vec<_> = self
+                    .config
+                    .rotation
+                    .iter()
+                    .map(|role| {
+                        let transcript = format!(
+                            "{}\n\n---\n\nYou are **{}** speaking in **Round {}**.",
+                            &base_transcript,
+                            title_case(role),
+                            round_num
+                        );
+                        let ctx = &system_ctx;
+                        s.spawn(move || {
+                            let messages = vec![Message {
+                                role: "user".to_string(),
+                                content: transcript,
+                            }];
+                            let agent = self.agents.get(role).unwrap();
+                            agent.respond(round_num, ctx, &messages, MAX_RETRIES_DEFAULT)
+                        })
+                    })
+                    .collect();
+
+                handles
+                    .into_iter()
+                    .map(|h| {
+                        h.join().unwrap_or_else(|_| {
+                            Err(CouncilError::ApiError("Agent thread panicked".into()))
+                        })
+                    })
+                    .collect::<Result<Vec<Turn>, _>>()
+            })?;
+
+            for turn in turns {
                 self.log_turn(&turn);
                 session.turns.push(turn);
             }
         }
 
-        // Vote phase
+        // Vote phase (all votes run in parallel)
         self.log_round("VOTE");
         let vote_ctx = vote_prompt(&self.prompts_dir, question)?;
         let full_transcript = Self::build_full_transcript(&session);
 
         for role in &self.config.rotation {
             self.log_waiting(role, "voting");
-            let vote_message = format!(
-                "{}\n\n---\n\nYou are {}. Cast your vote on the question above.",
-                full_transcript,
-                title_case(role)
-            );
-            let messages = vec![Message {
-                role: "user".to_string(),
-                content: vote_message,
-            }];
+        }
 
-            let agent = self.agents.get(role).unwrap();
-            let vote = agent.cast_vote(&vote_ctx, &messages, MAX_RETRIES_DEFAULT)?;
+        let votes = std::thread::scope(|s| {
+            let handles: Vec<_> = self
+                .config
+                .rotation
+                .iter()
+                .map(|role| {
+                    let vote_message = format!(
+                        "{}\n\n---\n\nYou are {}. Cast your vote on the question above.",
+                        &full_transcript,
+                        title_case(role)
+                    );
+                    let ctx = &vote_ctx;
+                    s.spawn(move || {
+                        let messages = vec![Message {
+                            role: "user".to_string(),
+                            content: vote_message,
+                        }];
+                        let agent = self.agents.get(role).unwrap();
+                        agent.cast_vote(ctx, &messages, MAX_RETRIES_DEFAULT)
+                    })
+                })
+                .collect();
+
+            handles
+                .into_iter()
+                .map(|h| {
+                    h.join().unwrap_or_else(|_| {
+                        Err(CouncilError::ApiError("Agent thread panicked".into()))
+                    })
+                })
+                .collect::<Result<Vec<Vote>, _>>()
+        })?;
+
+        for vote in votes {
             self.log_vote(&vote);
             session.votes.push(vote);
         }
@@ -119,7 +175,7 @@ impl Orchestrator {
         Ok(session)
     }
 
-    fn build_transcript(session: &Session, current_round: u32, current_role: &str) -> String {
+    fn build_round_transcript(session: &Session) -> String {
         let mut parts = vec![format!("# Question\n\n{}", session.question)];
 
         let mut prev_round = 0;
@@ -142,12 +198,6 @@ impl Orchestrator {
 
             parts.push(entry);
         }
-
-        parts.push(format!(
-            "\n---\n\nYou are **{}** speaking in **Round {}**.",
-            title_case(current_role),
-            current_round
-        ));
 
         parts.join("\n\n")
     }

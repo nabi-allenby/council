@@ -888,7 +888,6 @@ async fn test_create_session_validation() {
 async fn test_create_session_defaults() {
     let (url, mut c1) = start_daemon().await;
     let mut c2 = CouncilClient::connect(url.clone()).await.unwrap();
-    let mut c3 = CouncilClient::connect(url.clone()).await.unwrap();
 
     // rounds=0 should default to 2
     let resp = c1
@@ -930,7 +929,7 @@ async fn test_create_session_defaults() {
     assert_eq!(w.status, WaitStatus::YourTurn as i32);
     assert_eq!(w.current_round, 2);
 
-    // min_participants=0 should default to 3
+    // min_participants=0 should default to 2
     let resp = c1
         .create_session(CreateSessionRequest {
             question: "Min participants default?".to_string(),
@@ -944,15 +943,14 @@ async fn test_create_session_defaults() {
         .into_inner();
     let sid2 = resp.session_id;
 
-    // Join 2 — should NOT auto-start (needs 3)
-    join(&mut c1, "X", &sid2).await;
-    let (_, t_y) = join(&mut c2, "Y", &sid2).await;
-    let w = wait_for_status(&mut c2, &sid2, "Y", &t_y, 1).await;
+    // Join 1 — should NOT auto-start (needs 2)
+    let (_, t_x) = join(&mut c1, "X", &sid2).await;
+    let w = wait_for_status(&mut c1, &sid2, "X", &t_x, 1).await;
     assert_eq!(w.status, WaitStatus::Lobby as i32);
 
-    // Join a third — should auto-start
-    join(&mut c3, "Z", &sid2).await;
-    let w = wait_for_status(&mut c2, &sid2, "Y", &t_y, 5).await;
+    // Join a second — should auto-start
+    join(&mut c2, "Y", &sid2).await;
+    let w = wait_for_status(&mut c1, &sid2, "X", &t_x, 5).await;
     assert!(
         w.status == WaitStatus::YourTurn as i32 || w.status == WaitStatus::Waiting as i32,
         "Expected discussion to start, got status: {}",

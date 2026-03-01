@@ -15,6 +15,7 @@ use council_proto::{
 };
 
 use crate::config::SessionConfig;
+use crate::daemon_config::{DaemonConfig, DefaultsSection};
 use crate::types::{Participant, Session, SessionStatus, Turn, Vote, VoteChoice};
 
 struct SessionState {
@@ -124,7 +125,6 @@ impl CouncilService {
     }
 }
 
-#[allow(clippy::result_large_err)]
 fn validate_token(session: &Session, name: &str, token: &str) -> Result<(), Status> {
     match session.participants.iter().find(|p| p.name == name) {
         Some(p) if p.token == token => Ok(()),
@@ -240,19 +240,24 @@ impl Council for CouncilService {
             ));
         }
 
-        let rounds = if req.rounds == 0 { 2 } else { req.rounds };
+        let defaults = DefaultsSection::default();
+        let rounds = if req.rounds == 0 {
+            defaults.rounds
+        } else {
+            req.rounds
+        };
         let min_participants = if req.min_participants == 0 {
-            3
+            defaults.min_participants
         } else {
             req.min_participants
         };
         let join_timeout_secs = if req.join_timeout_seconds == 0 {
-            60
+            defaults.join_timeout
         } else {
             req.join_timeout_seconds
         };
         let turn_timeout_secs = if req.turn_timeout_seconds == 0 {
-            120
+            defaults.turn_timeout
         } else {
             req.turn_timeout_seconds
         };
@@ -540,7 +545,10 @@ impl Council for CouncilService {
 
         // Best-effort report save (outside write lock to avoid blocking)
         if let Some(ref completed_session) = completed {
-            if let Err(e) = crate::report::save_report(completed_session, Path::new("logs")) {
+            let logs_dir = DaemonConfig::config_dir()
+                .map(|d| d.join("logs"))
+                .unwrap_or_else(|| Path::new("logs").to_path_buf());
+            if let Err(e) = crate::report::save_report(completed_session, &logs_dir) {
                 eprintln!("Warning: failed to save report: {}", e);
             }
         }

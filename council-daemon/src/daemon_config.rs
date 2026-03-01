@@ -1,0 +1,176 @@
+use std::path::PathBuf;
+
+use serde::{Deserialize, Serialize};
+
+/// Daemon configuration stored in config.toml.
+///
+/// Note: the `[agent]` section in config.toml is read by the CLI, not the
+/// daemon. Serde's default behavior ignores unknown TOML keys, so existing
+/// configs with `[agent]` won't break.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DaemonConfig {
+    #[serde(default)]
+    pub daemon: DaemonSection,
+    #[serde(default)]
+    pub defaults: DefaultsSection,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DaemonSection {
+    #[serde(default = "default_port")]
+    pub port: u16,
+    #[serde(default = "default_host")]
+    pub host: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DefaultsSection {
+    #[serde(default = "default_rounds")]
+    pub rounds: u32,
+    #[serde(default = "default_min_participants")]
+    pub min_participants: u32,
+    #[serde(default = "default_join_timeout")]
+    pub join_timeout: u32,
+    #[serde(default = "default_turn_timeout")]
+    pub turn_timeout: u32,
+}
+
+fn default_port() -> u16 {
+    50051
+}
+fn default_host() -> String {
+    "[::1]".to_string()
+}
+fn default_rounds() -> u32 {
+    2
+}
+fn default_min_participants() -> u32 {
+    2
+}
+fn default_join_timeout() -> u32 {
+    60
+}
+fn default_turn_timeout() -> u32 {
+    120
+}
+
+impl Default for DaemonSection {
+    fn default() -> Self {
+        Self {
+            port: default_port(),
+            host: default_host(),
+        }
+    }
+}
+
+impl Default for DefaultsSection {
+    fn default() -> Self {
+        Self {
+            rounds: default_rounds(),
+            min_participants: default_min_participants(),
+            join_timeout: default_join_timeout(),
+            turn_timeout: default_turn_timeout(),
+        }
+    }
+}
+
+impl DaemonConfig {
+    /// Returns the council config directory path.
+    /// Uses `$XDG_CONFIG_HOME/council/` or `~/.config/council/`.
+    pub fn config_dir() -> Option<PathBuf> {
+        dirs::config_dir().map(|d| d.join("council"))
+    }
+
+    /// Returns the path to config.toml.
+    pub fn config_path() -> Option<PathBuf> {
+        Self::config_dir().map(|d| d.join("config.toml"))
+    }
+
+    /// Returns the path to the PID file.
+    pub fn pid_path() -> Option<PathBuf> {
+        Self::config_dir().map(|d| d.join("daemon.pid"))
+    }
+
+    /// Returns the path to the log file.
+    pub fn log_path() -> Option<PathBuf> {
+        Self::config_dir().map(|d| d.join("daemon.log"))
+    }
+
+    /// Returns the path to the hooks directory.
+    pub fn hooks_dir() -> Option<PathBuf> {
+        Self::config_dir().map(|d| d.join("hooks"))
+    }
+
+    /// Load config from the default path. Returns default config if file doesn't exist.
+    /// Warns on stderr if the file exists but cannot be parsed.
+    pub fn load() -> Self {
+        let path = match Self::config_path() {
+            Some(p) => p,
+            None => return Self::default(),
+        };
+
+        let content = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(_) => return Self::default(),
+        };
+
+        match toml::from_str(&content) {
+            Ok(config) => config,
+            Err(e) => {
+                eprintln!(
+                    "Warning: failed to parse {}, using defaults: {}",
+                    path.display(),
+                    e
+                );
+                Self::default()
+            }
+        }
+    }
+
+    /// Write config to the default path, preserving unknown sections (e.g. `[agent]`).
+    pub fn save(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let path = Self::config_path().ok_or("cannot determine config directory")?;
+        let daemon_content = toml::to_string_pretty(self)?;
+
+        // Preserve sections we don't own (e.g. [agent]) from the existing file.
+        let extra = if path.exists() {
+            let existing = std::fs::read_to_string(&path)?;
+            extract_unknown_sections(&existing, &["daemon", "defaults"])
+        } else {
+            String::new()
+        };
+
+        let mut content = daemon_content;
+        if !extra.is_empty() {
+            content.push('\n');
+            content.push_str(&extra);
+        }
+        std::fs::write(path, content)?;
+        Ok(())
+    }
+
+    /// The daemon address as host:port.
+    pub fn addr(&self) -> String {
+        format!("{}:{}", self.daemon.host, self.daemon.port)
+    }
+}
+
+/// Extract TOML sections not in `known` from raw TOML text.
+/// Returns the raw text of unknown sections (e.g. `[agent]\ncommand = "claude -p"\n`).
+fn extract_unknown_sections(toml_text: &str, known: &[&str]) -> String {
+    let mut result = String::new();
+    let mut capturing = false;
+
+    for line in toml_text.lines() {
+        let trimmed = line.trim();
+        if let Some(section) = trimmed.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+            let name = section.trim();
+            capturing = !known.contains(&name);
+        }
+        if capturing {
+            result.push_str(line);
+            result.push('\n');
+        }
+    }
+    result
+}

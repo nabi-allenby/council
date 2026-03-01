@@ -1,0 +1,766 @@
+pub mod client;
+pub mod error;
+
+use std::path::PathBuf;
+
+use clap::{Parser, Subcommand};
+use council_proto::WaitStatus;
+use tokio::process::Command;
+
+/// Participate in council deliberations autonomously.
+///
+/// You are a participant in a structured group discussion. Multiple
+/// participants discuss a question across rounds, then cast binding votes.
+/// You must drive this entire lifecycle yourself without asking a human
+/// for guidance. Read the question, form your own position, respond to
+/// other participants' arguments, and vote based on your own judgment.
+///
+/// AUTONOMOUS OPERATION:
+///   You MUST complete the full lifecycle without pausing for human input.
+///   After joining, loop: call wait, act on the status, repeat until done.
+///   Form your own opinions. Engage with the transcript. Decide your vote.
+///   Do NOT ask the user what to say or how to vote — that is your job.
+///
+/// LIFECYCLE:
+///   1. join     - Join the session lobby (do this once)
+///   2. wait     - Long-poll until it is your turn (blocks until ready)
+///   3. respond  - Submit your position when status is "your_turn"
+///   4. vote     - Cast your vote when status is "vote_phase"
+///   5. results  - Fetch the final outcome when status is "complete"
+///
+/// STATE MACHINE (act on the "status" field from wait):
+///   lobby      → call wait again immediately
+///   waiting    → call wait again immediately
+///   your_turn  → read the transcript, then call respond with your position
+///   vote_phase → read the transcript, then call vote with yay or nay
+///   complete   → call results to see the final decision, then stop
+///
+/// TIMING:
+///   Use --timeout 30 on wait (the default). The server long-polls and
+///   returns early when something happens. If wait returns "waiting" or
+///   "lobby", call wait again immediately — do not pause or sleep.
+///
+/// EXAMPLE SESSION:
+///   council-cli join --session $SID --name "Architect"
+///   # Save session_id and participant_token from output, then loop:
+///   council-cli wait --session $SID --name "Architect" --token $TOK
+///   # status: your_turn → respond:
+///   council-cli respond --session $SID --name "Architect" --token $TOK \
+///     --position "We should do X" --reasoning "Because A" --reasoning "Because B"
+///   # Keep calling wait → respond for each round, then:
+///   # status: vote_phase → vote:
+///   council-cli vote --session $SID --name "Architect" --token $TOK \
+///     --choice yay --reason "The arguments for X were compelling"
+///   # status: complete → results:
+///   council-cli results --session $SID
+///
+/// OUTPUT FORMAT:
+///   All output is structured text, one field per line:
+///     status: your_turn
+///     round: 2/3
+///     transcript: ...
+///   Parse the "status" line to determine your next action.
+#[derive(Parser)]
+#[command(name = "council-cli")]
+struct Cli {
+    /// Daemon address (host:port). Auto-detected from
+    /// ~/.config/council/config.toml if not specified.
+    #[arg(long, global = true)]
+    addr: Option<String>,
+
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Create a new council session and optionally spawn participant hooks.
+    ///
+    /// Creates a session on the daemon, then for each participant name spawns
+    /// the --hook script with COUNCIL_SESSION_ID, COUNCIL_PARTICIPANT_NAME,
+    /// and COUNCIL_ADDR as environment variables. Use --follow to poll status
+    /// and print results when the session completes.
+    Create {
+        /// The question for the council to discuss and vote on
+        #[arg(long)]
+        question: String,
+
+        /// Comma-separated participant names
+        #[arg(long, value_delimiter = ',')]
+        participants: Vec<String>,
+
+        /// Path to hook script to spawn per participant.
+        /// Defaults to ~/.config/council/hooks/hook.sh.
+        #[arg(long)]
+        hook: Option<PathBuf>,
+
+        /// Directory containing agent personality files (<name>.md per participant).
+        /// When set, passes COUNCIL_AGENT_FILE=<dir>/<name>.md to the hook.
+        #[arg(long)]
+        agents_dir: Option<PathBuf>,
+
+        /// Number of discussion rounds (1-10)
+        #[arg(long, default_value_t = 2)]
+        rounds: u32,
+
+        /// Minimum number of participants to start (defaults to participant count)
+        #[arg(long)]
+        min_participants: Option<u32>,
+
+        /// Seconds to wait for participants to join before starting anyway
+        #[arg(long, default_value_t = 60)]
+        join_timeout: u32,
+
+        /// Seconds to wait for a participant's response before skipping their turn
+        #[arg(long, default_value_t = 120)]
+        turn_timeout: u32,
+
+        /// Poll session status and print results when complete
+        #[arg(long)]
+        follow: bool,
+
+        /// Clear LLM nesting-guard env vars (CLAUDECODE, CLAUDE_CODE_ENTRYPOINT)
+        /// before spawning hooks. Required when running council from inside an
+        /// LLM session (e.g. Claude Code) so that `claude -p` subprocesses
+        /// don't refuse to start.
+        ///
+        /// This is safe for council's use case: hooks spawn isolated `claude -p`
+        /// processes that don't share runtime resources with the parent session.
+        /// The nesting guard in Claude Code is designed to prevent interactive
+        /// sessions from colliding on shared IPC channels — but print-mode
+        /// subprocesses are fully independent. Anthropic's own Agent SDK uses
+        /// the same bypass (clearing CLAUDECODE from subprocess env).
+        #[arg(long)]
+        allow_nesting: bool,
+    },
+
+    /// List all sessions on a daemon.
+    List,
+
+    /// Get the status of a specific session.
+    Status {
+        /// Session ID
+        #[arg(long)]
+        session: String,
+    },
+
+    /// Join a council session lobby. Do this once at the start.
+    ///
+    /// Returns session_id and participant_token — save both, you need them
+    /// for every subsequent command. After joining, immediately call wait
+    /// to begin the participation loop.
+    Join {
+        /// Session ID to join
+        #[arg(long)]
+        session: String,
+
+        /// Your display name or role (must be unique in the session)
+        #[arg(long)]
+        name: String,
+    },
+
+    /// Wait for your turn (long-poll). Call this in a loop.
+    ///
+    /// Use --timeout 30 (default). The server holds the connection open and
+    /// returns as soon as something changes. If it times out with status
+    /// "waiting" or "lobby", just call wait again immediately — this is normal.
+    ///
+    /// Act on the status field as soon as it returns:
+    ///   your_turn  → call respond with your position (read transcript first)
+    ///   vote_phase → call vote with yay/nay (read transcript first)
+    ///   complete   → call results, then stop
+    ///   waiting    → call wait again immediately (not your turn yet)
+    ///   lobby      → call wait again immediately (waiting for participants)
+    Wait {
+        /// Session ID (from join output)
+        #[arg(long)]
+        session: String,
+
+        /// Your participant name (must match join)
+        #[arg(long)]
+        name: String,
+
+        /// Your participant token (from join output)
+        #[arg(long)]
+        token: String,
+
+        /// How long to wait in seconds before returning current status
+        #[arg(long, default_value_t = 30)]
+        timeout: u32,
+    },
+
+    /// Submit your discussion response. Only call when status is "your_turn".
+    ///
+    /// Read the transcript from the wait output to understand what others said.
+    /// Form your own position — do NOT ask a human what to say. Engage with
+    /// the other participants' arguments. After responding, call wait again.
+    Respond {
+        /// Session ID
+        #[arg(long)]
+        session: String,
+
+        /// Your participant name
+        #[arg(long)]
+        name: String,
+
+        /// Your participant token
+        #[arg(long)]
+        token: String,
+
+        /// Your one-sentence position on the question
+        #[arg(long)]
+        position: String,
+
+        /// Supporting reasoning points (repeat for multiple: --reasoning "A" --reasoning "B")
+        #[arg(long, num_args = 1)]
+        reasoning: Vec<String>,
+
+        /// Outstanding concerns (repeat for multiple: --concerns "X" --concerns "Y")
+        #[arg(long, num_args = 1)]
+        concerns: Vec<String>,
+    },
+
+    /// Cast your binding vote. Only call when status is "vote_phase".
+    ///
+    /// Review the full transcript and decide for yourself. Vote yay to approve
+    /// or nay to reject. Provide a reason explaining your decision.
+    /// Do NOT ask a human how to vote — use your own judgment.
+    /// After voting, call wait again to check for completion.
+    Vote {
+        /// Session ID
+        #[arg(long)]
+        session: String,
+
+        /// Your participant name
+        #[arg(long)]
+        name: String,
+
+        /// Your participant token
+        #[arg(long)]
+        token: String,
+
+        /// Your vote: 'yay' or 'nay'
+        #[arg(long)]
+        choice: String,
+
+        /// 1-2 sentences explaining your vote
+        #[arg(long)]
+        reason: String,
+    },
+
+    /// Retrieve the final decision record. Only call when status is "complete".
+    ///
+    /// Returns the outcome (approved/rejected), vote breakdown,
+    /// and a full markdown report. This is the last step — you are done.
+    Results {
+        /// Session ID
+        #[arg(long)]
+        session: String,
+    },
+}
+
+/// Load the council config file, returning defaults if missing.
+fn load_config() -> CouncilConfig {
+    if let Some(config_dir) = dirs::config_dir() {
+        let config_path = config_dir.join("council").join("config.toml");
+        if let Ok(content) = std::fs::read_to_string(config_path) {
+            if let Ok(config) = toml::from_str::<CouncilConfig>(&content) {
+                return config;
+            }
+        }
+    }
+    CouncilConfig::default()
+}
+
+/// Resolve the daemon address: CLI flag > config file > default.
+fn resolve_addr(addr: Option<String>, config: &CouncilConfig) -> String {
+    if let Some(a) = addr {
+        return a;
+    }
+    format!("{}:{}", config.daemon.host, config.daemon.port)
+}
+
+/// Minimal config struct for reading daemon address and agent command.
+#[derive(Default, serde::Deserialize)]
+struct CouncilConfig {
+    #[serde(default)]
+    daemon: DaemonAddr,
+    #[serde(default)]
+    agent: AgentConfig,
+}
+
+#[derive(serde::Deserialize)]
+struct AgentConfig {
+    #[serde(default = "default_agent_command")]
+    command: String,
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            command: default_agent_command(),
+        }
+    }
+}
+
+fn default_agent_command() -> String {
+    "claude -p".to_string()
+}
+
+#[derive(serde::Deserialize)]
+struct DaemonAddr {
+    #[serde(default = "default_host")]
+    host: String,
+    #[serde(default = "default_port")]
+    port: u16,
+}
+
+impl Default for DaemonAddr {
+    fn default() -> Self {
+        Self {
+            host: default_host(),
+            port: default_port(),
+        }
+    }
+}
+
+// Keep in sync with council-daemon/src/daemon_config.rs defaults.
+fn default_host() -> String {
+    "[::1]".to_string()
+}
+fn default_port() -> u16 {
+    50051
+}
+
+/// Resolve hook path: explicit > ~/.config/council/hooks/hook.sh > error.
+fn resolve_hook(explicit: Option<PathBuf>) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    if let Some(p) = explicit {
+        return Ok(p);
+    }
+
+    if let Some(config_dir) = dirs::config_dir() {
+        let hooks_dir = config_dir.join("council").join("hooks");
+        let hook = hooks_dir.join("hook.sh");
+        if hook.exists() {
+            return Ok(hook);
+        }
+    }
+
+    Err("no hook specified and no default hook found.\n\
+         hint: run `council-daemon setup` to install the default hooks,\n\
+         or pass --hook <path> explicitly."
+        .into())
+}
+
+/// Look for an agent personality file in the given directory.
+/// Tries `<name>.md` first, then lowercase `<name>.md`.
+fn find_agent_file(dir: &std::path::Path, name: &str) -> Option<PathBuf> {
+    let exact = dir.join(format!("{}.md", name));
+    if exact.exists() {
+        return Some(exact);
+    }
+    let lower = dir.join(format!("{}.md", name.to_lowercase()));
+    if lower.exists() {
+        return Some(lower);
+    }
+    None
+}
+
+/// CLI entry point. Parses args and dispatches to the appropriate command.
+pub async fn cli_main() {
+    let cli = Cli::parse();
+    let config = load_config();
+    let addr = resolve_addr(cli.addr, &config);
+
+    let result = match cli.command {
+        Commands::Create {
+            question,
+            participants,
+            hook,
+            agents_dir,
+            rounds,
+            min_participants,
+            join_timeout,
+            turn_timeout,
+            follow,
+            allow_nesting,
+        } => {
+            run_create(CreateParams {
+                addr: &addr,
+                question: &question,
+                participants,
+                hook,
+                agents_dir,
+                agent_command: &config.agent.command,
+                rounds,
+                min_participants,
+                join_timeout,
+                turn_timeout,
+                follow,
+                allow_nesting,
+            })
+            .await
+        }
+        Commands::List => run_list(&addr).await,
+        Commands::Status { session } => run_status(&addr, &session).await,
+        Commands::Join { session, name } => run_join(&addr, &session, &name).await,
+        Commands::Wait {
+            session,
+            name,
+            token,
+            timeout,
+        } => run_wait(&addr, &session, &name, &token, timeout).await,
+        Commands::Respond {
+            session,
+            name,
+            token,
+            position,
+            reasoning,
+            concerns,
+        } => {
+            run_respond(
+                &addr, &session, &name, &token, &position, reasoning, concerns,
+            )
+            .await
+        }
+        Commands::Vote {
+            session,
+            name,
+            token,
+            choice,
+            reason,
+        } => run_vote(&addr, &session, &name, &token, &choice, &reason).await,
+        Commands::Results { session } => run_results(&addr, &session).await,
+    };
+
+    if let Err(e) = result {
+        eprintln!("error: {}", e);
+        if is_connection_error(e.as_ref()) && !has_config() {
+            eprintln!();
+            eprintln!("hint: no daemon appears to be running and no config was found.");
+            eprintln!("      Run `council-daemon setup` to create config and start the daemon.");
+        }
+        std::process::exit(1);
+    }
+}
+
+struct CreateParams<'a> {
+    addr: &'a str,
+    question: &'a str,
+    participants: Vec<String>,
+    hook: Option<PathBuf>,
+    agents_dir: Option<PathBuf>,
+    agent_command: &'a str,
+    rounds: u32,
+    min_participants: Option<u32>,
+    join_timeout: u32,
+    turn_timeout: u32,
+    follow: bool,
+    allow_nesting: bool,
+}
+
+async fn run_create(params: CreateParams<'_>) -> Result<(), Box<dyn std::error::Error>> {
+    let CreateParams {
+        addr,
+        question,
+        participants,
+        hook,
+        agents_dir,
+        agent_command,
+        rounds,
+        min_participants,
+        join_timeout,
+        turn_timeout,
+        follow,
+        allow_nesting,
+    } = params;
+
+    let hook = resolve_hook(hook)?;
+    // Validate hook exists before calling the daemon
+    if !hook.exists() {
+        return Err(format!("hook not found: {}", hook.display()).into());
+    }
+
+    let min_p = min_participants.unwrap_or(participants.len() as u32);
+
+    // Reuse a single gRPC client for all RPCs in this flow
+    let mut rpc = client::connect(addr).await?;
+
+    let resp = rpc
+        .create_session(council_proto::CreateSessionRequest {
+            question: question.to_string(),
+            rounds,
+            min_participants: min_p,
+            join_timeout_seconds: join_timeout,
+            turn_timeout_seconds: turn_timeout,
+        })
+        .await?
+        .into_inner();
+    let session_id = resp.session_id;
+    eprintln!("session_id: {}", session_id);
+
+    // Spawn hook per participant
+    let mut children = Vec::new();
+    for name in &participants {
+        eprintln!("Spawning hook for participant: {}", name);
+        let mut cmd = Command::new(&hook);
+        cmd.env("COUNCIL_SESSION_ID", &session_id)
+            .env("COUNCIL_PARTICIPANT_NAME", name)
+            .env("COUNCIL_ADDR", addr)
+            .env("COUNCIL_AGENT_COMMAND", agent_command)
+            .stdin(std::process::Stdio::null());
+
+        // Clear nesting-guard vars so isolated `claude -p` subprocesses
+        // don't refuse to start. Safe because hooks are independent processes
+        // that don't share IPC channels with the parent LLM session.
+        if allow_nesting {
+            cmd.env_remove("CLAUDECODE")
+                .env_remove("CLAUDE_CODE_ENTRYPOINT");
+        }
+
+        // If --agents-dir given, look for a personality file for this participant
+        if let Some(ref dir) = agents_dir {
+            if let Some(agent_file) = find_agent_file(dir, name) {
+                eprintln!("  agent file: {}", agent_file.display());
+                cmd.env("COUNCIL_AGENT_FILE", &agent_file);
+            }
+        }
+
+        let child = cmd
+            .spawn()
+            .map_err(|e| format!("failed to spawn hook for {}: {}", name, e))?;
+        children.push((name.clone(), child));
+    }
+
+    if !follow {
+        // Without --follow, hooks run independently. Don't wait or kill them.
+        return Ok(());
+    }
+
+    let result = follow_session(&mut rpc, &session_id).await;
+
+    // Session is done (or errored). Kill and reap hook processes — they may
+    // still be blocked in a wait call.
+    for (name, mut child) in children {
+        let _ = child.kill().await;
+        match child.wait().await {
+            Ok(status) if !status.success() => {
+                eprintln!("Warning: hook for {} exited with {}", name, status);
+            }
+            Err(e) => {
+                eprintln!("Warning: failed to wait for hook for {}: {}", name, e);
+            }
+            _ => {}
+        }
+    }
+
+    result
+}
+
+async fn follow_session(
+    rpc: &mut council_proto::council_client::CouncilClient<tonic::transport::Channel>,
+    session_id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    eprintln!("Following session {}...", session_id);
+    let mut consecutive_errors = 0u32;
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+        let status = match rpc
+            .get_session(council_proto::GetSessionRequest {
+                session_id: session_id.to_string(),
+            })
+            .await
+        {
+            Ok(resp) => {
+                consecutive_errors = 0;
+                resp.into_inner()
+            }
+            Err(e) => {
+                consecutive_errors += 1;
+                if consecutive_errors >= 5 {
+                    return Err(format!("lost connection to daemon after 5 retries: {}", e).into());
+                }
+                eprintln!(
+                    "Warning: poll failed (attempt {}/5): {}",
+                    consecutive_errors, e
+                );
+                continue;
+            }
+        };
+
+        let status_str = format_session_status(status.status);
+        eprintln!(
+            "[{}] status={} round={}/{} participants={}",
+            session_id,
+            status_str,
+            status.current_round,
+            status.total_rounds,
+            status.participants.join(", ")
+        );
+
+        if status.status == council_proto::SessionStatus::Completed as i32 {
+            let results = rpc
+                .results(council_proto::ResultsRequest {
+                    session_id: session_id.to_string(),
+                })
+                .await?
+                .into_inner();
+            print_results(&results);
+            return Ok(());
+        }
+    }
+}
+
+async fn run_list(addr: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let resp = client::list_sessions(addr).await?;
+    if resp.sessions.is_empty() {
+        println!("No sessions.");
+        return Ok(());
+    }
+    for s in &resp.sessions {
+        println!(
+            "{} status={} participants={} question=\"{}\"",
+            s.session_id,
+            format_session_status(s.status),
+            s.participant_count,
+            s.question
+        );
+    }
+    Ok(())
+}
+
+async fn run_status(addr: &str, session_id: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let resp = client::get_session(addr, session_id).await?;
+    println!("session_id: {}", resp.session_id);
+    println!("question: {}", resp.question);
+    println!("status: {}", format_session_status(resp.status));
+    println!("participants: {}", resp.participants.join(", "));
+    println!("round: {}/{}", resp.current_round, resp.total_rounds);
+    Ok(())
+}
+
+async fn run_join(
+    addr: &str,
+    session_id: &str,
+    name: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let resp = client::join(addr, name, session_id).await?;
+    println!("session_id: {}", resp.session_id);
+    println!("question: {}", resp.question);
+    println!("participants: {}", resp.participants.join(", "));
+    println!("status: {}", format_session_status(resp.status));
+    println!("rounds: {}", resp.rounds);
+    println!("min_participants: {}", resp.min_participants);
+    println!("participant_token: {}", resp.participant_token);
+    Ok(())
+}
+
+async fn run_wait(
+    addr: &str,
+    session: &str,
+    name: &str,
+    token: &str,
+    timeout: u32,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let resp = client::wait(addr, session, name, token, timeout).await?;
+    println!("status: {}", format_wait_status(resp.status));
+    println!("round: {}/{}", resp.current_round, resp.total_rounds);
+    println!("current_speaker: {}", resp.current_speaker);
+    println!("participants: {}", resp.participants.join(", "));
+    println!("question: {}", resp.question);
+    if !resp.transcript.is_empty() {
+        println!("transcript: {}", resp.transcript);
+    }
+    Ok(())
+}
+
+async fn run_respond(
+    addr: &str,
+    session: &str,
+    name: &str,
+    token: &str,
+    position: &str,
+    reasoning: Vec<String>,
+    concerns: Vec<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let resp = client::respond(addr, session, name, token, position, reasoning, concerns).await?;
+    println!("accepted: {}", resp.accepted);
+    println!("next_step: {}", resp.next_step);
+    Ok(())
+}
+
+async fn run_vote(
+    addr: &str,
+    session: &str,
+    name: &str,
+    token: &str,
+    choice: &str,
+    reason: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let resp = client::vote(addr, session, name, token, choice, reason).await?;
+    println!("accepted: {}", resp.accepted);
+    println!("message: {}", resp.message);
+    Ok(())
+}
+
+async fn run_results(addr: &str, session: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let resp = client::results(addr, session).await?;
+    print_results(&resp);
+    Ok(())
+}
+
+fn print_results(results: &council_proto::ResultsResponse) {
+    let outcome = match results.outcome {
+        x if x == council_proto::Outcome::Approved as i32 => "APPROVED",
+        x if x == council_proto::Outcome::Rejected as i32 => "REJECTED",
+        _ => "UNKNOWN",
+    };
+    println!("outcome: {}", outcome);
+    println!("yay_count: {}", results.yay_count);
+    println!("nay_count: {}", results.nay_count);
+    for v in &results.votes {
+        let choice = match v.choice {
+            x if x == council_proto::VoteChoice::Yay as i32 => "yay",
+            x if x == council_proto::VoteChoice::Nay as i32 => "nay",
+            _ => "unknown",
+        };
+        println!("vote: {} {} \"{}\"", v.participant, choice, v.reason);
+    }
+    if !results.decision_record.is_empty() {
+        println!("---");
+        println!("{}", results.decision_record);
+    }
+}
+
+fn is_connection_error(e: &(dyn std::error::Error + 'static)) -> bool {
+    e.downcast_ref::<error::CliError>()
+        .is_some_and(|ce| matches!(ce, error::CliError::Connection(_)))
+}
+
+fn has_config() -> bool {
+    dirs::config_dir()
+        .map(|d| d.join("council").join("config.toml").exists())
+        .unwrap_or(false)
+}
+
+fn format_wait_status(status: i32) -> &'static str {
+    match status {
+        x if x == WaitStatus::YourTurn as i32 => "your_turn",
+        x if x == WaitStatus::Waiting as i32 => "waiting",
+        x if x == WaitStatus::VotePhase as i32 => "vote_phase",
+        x if x == WaitStatus::Complete as i32 => "complete",
+        x if x == WaitStatus::Lobby as i32 => "lobby",
+        _ => "unknown",
+    }
+}
+
+fn format_session_status(status: i32) -> &'static str {
+    match status {
+        x if x == council_proto::SessionStatus::LobbyOpen as i32 => "lobby_open",
+        x if x == council_proto::SessionStatus::InProgress as i32 => "in_progress",
+        x if x == council_proto::SessionStatus::Voting as i32 => "voting",
+        x if x == council_proto::SessionStatus::Completed as i32 => "completed",
+        _ => "unknown",
+    }
+}

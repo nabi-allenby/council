@@ -125,6 +125,7 @@ impl CouncilService {
     }
 }
 
+#[allow(clippy::result_large_err)] // Status is from tonic; boxing would complicate all call sites
 fn validate_token(session: &Session, name: &str, token: &str) -> Result<(), Status> {
     match session.participants.iter().find(|p| p.name == name) {
         Some(p) if p.token == token => Ok(()),

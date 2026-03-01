@@ -123,7 +123,7 @@ jobs:
             cross: true
             archive: tar.gz
           - target: x86_64-apple-darwin
-            runner: macos-13
+            runner: macos-latest
             cross: false
             archive: tar.gz
           - target: aarch64-apple-darwin
@@ -154,7 +154,7 @@ jobs:
 
       - name: Install cross (Linux ARM)
         if: matrix.cross
-        run: cargo install cross --tag v0.2.5
+        run: cargo install cross --git https://github.com/cross-rs/cross --tag v0.2.5
 
       - name: Build
         if: "!matrix.cross"
@@ -212,7 +212,7 @@ jobs:
             cross: true
             archive: tar.gz
           - target: x86_64-apple-darwin
-            runner: macos-13
+            runner: macos-latest
             cross: false
             archive: tar.gz
           - target: aarch64-apple-darwin
@@ -243,7 +243,7 @@ jobs:
 
       - name: Install cross (Linux ARM)
         if: matrix.cross
-        run: cargo install cross --tag v0.2.5
+        run: cargo install cross --git https://github.com/cross-rs/cross --tag v0.2.5
 
       - name: Build
         if: "!matrix.cross"

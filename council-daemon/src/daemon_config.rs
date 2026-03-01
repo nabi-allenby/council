@@ -127,10 +127,24 @@ impl DaemonConfig {
         }
     }
 
-    /// Write config to the default path.
+    /// Write config to the default path, preserving unknown sections (e.g. `[agent]`).
     pub fn save(&self) -> Result<(), Box<dyn std::error::Error>> {
         let path = Self::config_path().ok_or("cannot determine config directory")?;
-        let content = toml::to_string_pretty(self)?;
+        let daemon_content = toml::to_string_pretty(self)?;
+
+        // Preserve sections we don't own (e.g. [agent]) from the existing file.
+        let extra = if path.exists() {
+            let existing = std::fs::read_to_string(&path)?;
+            extract_unknown_sections(&existing, &["daemon", "defaults"])
+        } else {
+            String::new()
+        };
+
+        let mut content = daemon_content;
+        if !extra.is_empty() {
+            content.push('\n');
+            content.push_str(&extra);
+        }
         std::fs::write(path, content)?;
         Ok(())
     }
@@ -139,4 +153,24 @@ impl DaemonConfig {
     pub fn addr(&self) -> String {
         format!("{}:{}", self.daemon.host, self.daemon.port)
     }
+}
+
+/// Extract TOML sections not in `known` from raw TOML text.
+/// Returns the raw text of unknown sections (e.g. `[agent]\ncommand = "claude -p"\n`).
+fn extract_unknown_sections(toml_text: &str, known: &[&str]) -> String {
+    let mut result = String::new();
+    let mut capturing = false;
+
+    for line in toml_text.lines() {
+        let trimmed = line.trim();
+        if let Some(section) = trimmed.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+            let name = section.trim();
+            capturing = !known.contains(&name);
+        }
+        if capturing {
+            result.push_str(line);
+            result.push('\n');
+        }
+    }
+    result
 }

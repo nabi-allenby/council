@@ -15,7 +15,7 @@ use council_proto::{
 };
 
 use crate::config::SessionConfig;
-use crate::daemon_config::DefaultsSection;
+use crate::daemon_config::{DaemonConfig, DefaultsSection};
 use crate::types::{Participant, Session, SessionStatus, Turn, Vote, VoteChoice};
 
 struct SessionState {
@@ -545,7 +545,10 @@ impl Council for CouncilService {
 
         // Best-effort report save (outside write lock to avoid blocking)
         if let Some(ref completed_session) = completed {
-            if let Err(e) = crate::report::save_report(completed_session, Path::new("logs")) {
+            let logs_dir = DaemonConfig::config_dir()
+                .map(|d| d.join("logs"))
+                .unwrap_or_else(|| Path::new("logs").to_path_buf());
+            if let Err(e) = crate::report::save_report(completed_session, &logs_dir) {
                 eprintln!("Warning: failed to save report: {}", e);
             }
         }

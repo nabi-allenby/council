@@ -532,17 +532,16 @@ async fn run_create(params: CreateParams<'_>) -> Result<(), Box<dyn std::error::
         children.push((name.clone(), child));
     }
 
-    let result = if follow {
-        follow_session(&mut rpc, &session_id).await
-    } else {
-        Ok(())
-    };
+    if !follow {
+        // Without --follow, hooks run independently. Don't wait or kill them.
+        return Ok(());
+    }
 
-    // Kill and reap hook processes. On error or completion, hooks may still
-    // be running (e.g. blocked in a wait call). Send kill signal first, then
-    // wait to avoid leaving orphans.
+    let result = follow_session(&mut rpc, &session_id).await;
+
+    // Session is done (or errored). Kill and reap hook processes — they may
+    // still be blocked in a wait call.
     for (name, mut child) in children {
-        // Try to kill — ignore errors (process may have already exited)
         let _ = child.kill().await;
         match child.wait().await {
             Ok(status) if !status.success() => {

@@ -272,19 +272,44 @@ fn is_daemon_running() -> bool {
     process_alive(pid)
 }
 
-/// Check if a process with the given PID is alive.
+/// Check if a process with the given PID is alive AND is a council-daemon.
+/// Guards against PID reuse after a crash — kill(pid, 0) alone would match
+/// any process owned by the user.
 fn process_alive(pid: u32) -> bool {
     #[cfg(unix)]
     {
-        // kill(pid, 0) checks if process exists without sending a signal
         let ret = unsafe { libc::kill(pid as i32, 0) };
-        ret == 0
+        if ret != 0 {
+            return false;
+        }
+        // Verify it's actually council-daemon by checking the command name
+        is_council_daemon(pid)
     }
     #[cfg(not(unix))]
     {
         let _ = pid;
         false
     }
+}
+
+/// Verify the process is a council-daemon instance.
+#[cfg(unix)]
+fn is_council_daemon(pid: u32) -> bool {
+    // Try /proc/<pid>/comm first (Linux), fall back to ps (macOS/BSD)
+    let comm_path = format!("/proc/{}/comm", pid);
+    if let Ok(comm) = fs::read_to_string(&comm_path) {
+        return comm.trim().contains("council-daemon") || comm.trim().contains("council_daemon");
+    }
+
+    // macOS/BSD: use ps to get the command name
+    Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "comm="])
+        .output()
+        .map(|o| {
+            let name = String::from_utf8_lossy(&o.stdout);
+            name.contains("council-daemon") || name.contains("council_daemon")
+        })
+        .unwrap_or(false)
 }
 
 /// Set file as executable on Unix.

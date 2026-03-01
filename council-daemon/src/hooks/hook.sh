@@ -64,7 +64,8 @@ while true; do
       ;;
     your_turn)
       ROUND=$(echo "$WAIT_OUTPUT" | grep '^round:' | cut -d' ' -f2)
-      TRANSCRIPT=$(echo "$WAIT_OUTPUT" | grep '^transcript:' | cut -d' ' -f2-)
+      # Transcript is multi-line; capture from the transcript: line to the end
+      TRANSCRIPT=$(echo "$WAIT_OUTPUT" | awk '/^transcript: /{found=1; sub(/^transcript: /, ""); print; next} found{print}')
 
       # Append this round's prompt to the conversation file.
       # The file accumulates across rounds so the agent sees its own
@@ -101,7 +102,12 @@ EOF
 
         POSITION=$(echo "$RESPONSE" | grep '^POSITION:' | head -1 | sed 's/^POSITION: //')
         REASONING1=$(echo "$RESPONSE" | grep '^REASONING:' | head -1 | sed 's/^REASONING: //')
-        REASONING2=$(echo "$RESPONSE" | grep '^REASONING:' | tail -1 | sed 's/^REASONING: //')
+        REASONING_COUNT=$(echo "$RESPONSE" | grep -c '^REASONING:' || true)
+        if [ "$REASONING_COUNT" -ge 2 ]; then
+          REASONING2=$(echo "$RESPONSE" | grep '^REASONING:' | sed -n '2p' | sed 's/^REASONING: //')
+        else
+          REASONING2=""
+        fi
 
         if [ -n "$POSITION" ] && [ -n "$REASONING1" ]; then
           break
@@ -114,17 +120,19 @@ EOF
         exit 1
       fi
 
-      # Default REASONING2 to REASONING1 if only one reasoning line was provided
-      REASONING2="${REASONING2:-$REASONING1}"
+      # Build reasoning args — only include second if distinct
+      REASONING_ARGS=(--reasoning "$REASONING1")
+      if [ -n "$REASONING2" ]; then
+        REASONING_ARGS+=(--reasoning "$REASONING2")
+      fi
 
       council-cli respond --addr "$ADDR" --session "$SESSION" \
         --name "$NAME" --token "$TOKEN" \
         --position "$POSITION" \
-        --reasoning "$REASONING1" \
-        --reasoning "$REASONING2"
+        "${REASONING_ARGS[@]}"
       ;;
     vote_phase)
-      TRANSCRIPT=$(echo "$WAIT_OUTPUT" | grep '^transcript:' | cut -d' ' -f2-)
+      TRANSCRIPT=$(echo "$WAIT_OUTPUT" | awk '/^transcript: /{found=1; sub(/^transcript: /, ""); print; next} found{print}')
 
       # Build vote prompt in a separate file (personality + vote instructions)
       if [ -n "$PERSONALITY" ]; then

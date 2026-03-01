@@ -275,7 +275,7 @@ checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
 name = "council-cli"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "clap",
  "council-proto",
@@ -289,7 +289,7 @@ dependencies = [
 
 [[package]]
 name = "council-daemon"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "chrono",
  "clap",
@@ -307,7 +307,7 @@ dependencies = [
 
 [[package]]
 name = "council-proto"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "prost",
  "tonic",

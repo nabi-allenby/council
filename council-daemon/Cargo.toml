@@ -1,6 +1,6 @@
 [package]
 name = "council-daemon"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/nabi-allenby/council"
@@ -15,7 +15,7 @@ name = "council-daemon"
 path = "src/main.rs"
 
 [dependencies]
-council-proto = { path = "../council-proto", version = "0.1.0" }
+council-proto = { path = "../council-proto", version = "1.0.0" }
 tonic = "0.12"
 prost = "0.13"
 tokio = { version = "1", features = ["full"] }

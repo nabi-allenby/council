@@ -1,9 +1,8 @@
-name: Release
+name: Release & Publish
 
 on:
   push:
-    tags:
-      - "v*"
+    branches: [main]
 
 permissions:
   contents: write
@@ -12,8 +11,104 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
-    name: Build ${{ matrix.target }}
+  release:
+    name: Calculate versions
+    runs-on: ubuntu-latest
+    outputs:
+      daemon_version: ${{ steps.daemon.outputs.version }}
+      cli_version: ${{ steps.cli.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Calculate council-daemon version
+        id: daemon
+        run: |
+          PREFIX="council-daemon/v"
+          LAST_TAG=$(git tag -l "${PREFIX}*" --sort=-v:refname | head -1)
+
+          if [ -z "$LAST_TAG" ]; then
+            echo "version=1.0.0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Get conventional commits since last tag touching daemon or proto
+          COMMITS=$(git log "$LAST_TAG"..HEAD --format="%s" -- council-daemon/ council-proto/)
+          if [ -z "$COMMITS" ]; then
+            echo "version=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Parse current version
+          CURRENT="${LAST_TAG#$PREFIX}"
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+
+          # Determine bump from conventional commits
+          if echo "$COMMITS" | grep -qE '^[a-z]+(\(.+\))?!:'; then
+            MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0
+          elif echo "$COMMITS" | grep -qE '^feat(\(.+\))?:'; then
+            MINOR=$((MINOR + 1)); PATCH=0
+          else
+            PATCH=$((PATCH + 1))
+          fi
+
+          echo "version=${MAJOR}.${MINOR}.${PATCH}" >> "$GITHUB_OUTPUT"
+
+      - name: Calculate council-cli version
+        id: cli
+        run: |
+          PREFIX="council-cli/v"
+          LAST_TAG=$(git tag -l "${PREFIX}*" --sort=-v:refname | head -1)
+
+          if [ -z "$LAST_TAG" ]; then
+            echo "version=1.0.0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Get conventional commits since last tag touching cli or proto
+          COMMITS=$(git log "$LAST_TAG"..HEAD --format="%s" -- council-cli/ council-proto/)
+          if [ -z "$COMMITS" ]; then
+            echo "version=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Parse current version
+          CURRENT="${LAST_TAG#$PREFIX}"
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+
+          # Determine bump from conventional commits
+          if echo "$COMMITS" | grep -qE '^[a-z]+(\(.+\))?!:'; then
+            MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0
+          elif echo "$COMMITS" | grep -qE '^feat(\(.+\))?:'; then
+            MINOR=$((MINOR + 1)); PATCH=0
+          else
+            PATCH=$((PATCH + 1))
+          fi
+
+          echo "version=${MAJOR}.${MINOR}.${PATCH}" >> "$GITHUB_OUTPUT"
+
+      - name: Create git tags
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          if [ -n "${{ steps.daemon.outputs.version }}" ]; then
+            git tag "council-daemon/v${{ steps.daemon.outputs.version }}"
+            echo "Tagged council-daemon/v${{ steps.daemon.outputs.version }}"
+          fi
+
+          if [ -n "${{ steps.cli.outputs.version }}" ]; then
+            git tag "council-cli/v${{ steps.cli.outputs.version }}"
+            echo "Tagged council-cli/v${{ steps.cli.outputs.version }}"
+          fi
+
+          git push --tags
+
+  build-council-daemon:
+    name: Build council-daemon (${{ matrix.target }})
+    needs: release
+    if: needs.release.outputs.daemon_version != ''
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -39,7 +134,6 @@ jobs:
             runner: windows-latest
             cross: false
             archive: zip
-
     steps:
       - uses: actions/checkout@v4
 
@@ -62,26 +156,110 @@ jobs:
         if: matrix.cross
         run: cargo install cross --tag v0.2.5
 
-      - name: Build release binaries
+      - name: Build
         if: "!matrix.cross"
-        run: cargo build --release --locked --package council --target ${{ matrix.target }}
+        run: cargo build --release --locked --package council-daemon --target ${{ matrix.target }}
 
-      - name: Build release binaries (cross)
+      - name: Build (cross)
         if: matrix.cross
-        run: cross build --release --locked --package council --target ${{ matrix.target }}
-
-      - name: Determine version
-        id: version
-        shell: bash
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+        run: cross build --release --locked --package council-daemon --target ${{ matrix.target }}
 
       - name: Package (tar.gz)
         if: matrix.archive == 'tar.gz'
         shell: bash
         run: |
-          staging="council-${{ steps.version.outputs.version }}-${{ matrix.target }}"
+          VERSION="${{ needs.release.outputs.daemon_version }}"
+          staging="council-daemon-${VERSION}-${{ matrix.target }}"
           mkdir "$staging"
           cp target/${{ matrix.target }}/release/council-daemon "$staging/"
+          cp LICENSE "$staging/"
+          tar czf "$staging.tar.gz" "$staging"
+          echo "ASSET=$staging.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Package (zip)
+        if: matrix.archive == 'zip'
+        shell: bash
+        run: |
+          VERSION="${{ needs.release.outputs.daemon_version }}"
+          staging="council-daemon-${VERSION}-${{ matrix.target }}"
+          mkdir "$staging"
+          cp target/${{ matrix.target }}/release/council-daemon.exe "$staging/"
+          cp LICENSE "$staging/"
+          7z a "$staging.zip" "$staging"
+          echo "ASSET=$staging.zip" >> "$GITHUB_ENV"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: council-daemon-${{ matrix.target }}
+          path: ${{ env.ASSET }}
+
+  build-council-cli:
+    name: Build council-cli (${{ matrix.target }})
+    needs: release
+    if: needs.release.outputs.cli_version != ''
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            cross: false
+            archive: tar.gz
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-latest
+            cross: true
+            archive: tar.gz
+          - target: x86_64-apple-darwin
+            runner: macos-13
+            cross: false
+            archive: tar.gz
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+            cross: false
+            archive: tar.gz
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            cross: false
+            archive: zip
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Rust toolchain
+        run: |
+          rustup update stable
+          rustup default stable
+          rustup target add ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install cross (Linux ARM)
+        if: matrix.cross
+        run: cargo install cross --tag v0.2.5
+
+      - name: Build
+        if: "!matrix.cross"
+        run: cargo build --release --locked --package council-cli --target ${{ matrix.target }}
+
+      - name: Build (cross)
+        if: matrix.cross
+        run: cross build --release --locked --package council-cli --target ${{ matrix.target }}
+
+      - name: Package (tar.gz)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          VERSION="${{ needs.release.outputs.cli_version }}"
+          staging="council-cli-${VERSION}-${{ matrix.target }}"
+          mkdir "$staging"
           cp target/${{ matrix.target }}/release/council-cli "$staging/"
           cp LICENSE "$staging/"
           tar czf "$staging.tar.gz" "$staging"
@@ -91,9 +269,9 @@ jobs:
         if: matrix.archive == 'zip'
         shell: bash
         run: |
-          staging="council-${{ steps.version.outputs.version }}-${{ matrix.target }}"
+          VERSION="${{ needs.release.outputs.cli_version }}"
+          staging="council-cli-${VERSION}-${{ matrix.target }}"
           mkdir "$staging"
-          cp target/${{ matrix.target }}/release/council-daemon.exe "$staging/"
           cp target/${{ matrix.target }}/release/council-cli.exe "$staging/"
           cp LICENSE "$staging/"
           7z a "$staging.zip" "$staging"
@@ -102,34 +280,30 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: council-${{ matrix.target }}
+          name: council-cli-${{ matrix.target }}
           path: ${{ env.ASSET }}
 
-  release:
-    name: Create GitHub Release
-    needs: build
+  release-council-daemon:
+    name: Release council-daemon
+    needs: [release, build-council-daemon]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download all artifacts
+      - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
+          pattern: council-daemon-*
           path: artifacts
           merge-multiple: true
 
-      - name: Create release
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: council-daemon/v${{ needs.release.outputs.daemon_version }}
+          name: council-daemon v${{ needs.release.outputs.daemon_version }}
           generate_release_notes: true
           files: artifacts/*
-
-  publish:
-    name: Publish to crates.io
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
 
       - name: Install protoc
         uses: arduino/setup-protoc@v3
@@ -137,7 +311,7 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish council-proto
-        run: cargo publish -p council-proto
+        run: cargo publish -p council-proto || echo "council-proto already published"
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
@@ -149,15 +323,42 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
-      - name: Publish council-cli
-        run: cargo publish -p council-cli
+  release-council-cli:
+    name: Release council-cli
+    needs: [release, build-council-cli]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: council-cli-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: council-cli/v${{ needs.release.outputs.cli_version }}
+          name: council-cli v${{ needs.release.outputs.cli_version }}
+          generate_release_notes: true
+          files: artifacts/*
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish council-proto
+        run: cargo publish -p council-proto || echo "council-proto already published"
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
       - name: Wait for crates.io index
         run: sleep 30
 
-      - name: Publish council
-        run: cargo publish -p council
+      - name: Publish council-cli
+        run: cargo publish -p council-cli
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

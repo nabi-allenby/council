@@ -352,6 +352,11 @@ pub async fn cli_main() {
 
     if let Err(e) = result {
         eprintln!("error: {}", e);
+        if is_connection_error(e.as_ref()) && !has_config() {
+            eprintln!();
+            eprintln!("hint: no daemon appears to be running and no config was found.");
+            eprintln!("      Run `council-daemon setup` to create config and start the daemon.");
+        }
         std::process::exit(1);
     }
 }
@@ -601,6 +606,17 @@ fn print_results(results: &council_proto::ResultsResponse) {
         println!("---");
         println!("{}", results.decision_record);
     }
+}
+
+fn is_connection_error(e: &(dyn std::error::Error + 'static)) -> bool {
+    e.downcast_ref::<error::CliError>()
+        .is_some_and(|ce| matches!(ce, error::CliError::Connection(_)))
+}
+
+fn has_config() -> bool {
+    dirs::config_dir()
+        .map(|d| d.join("council").join("config.toml").exists())
+        .unwrap_or(false)
 }
 
 fn format_wait_status(status: i32) -> &'static str {

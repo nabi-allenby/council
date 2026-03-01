@@ -94,14 +94,13 @@ impl SessionStore {
         let sessions = self.sessions.read().await;
         let mut summaries = Vec::with_capacity(sessions.len());
         for (_, state) in sessions.iter() {
-            if let Ok(session) = state.session.try_read() {
-                summaries.push(SessionSummary {
-                    session_id: session.id.clone(),
-                    question: session.question.clone(),
-                    status: proto_session_status(&session.status),
-                    participant_count: session.participants.len() as u32,
-                });
-            }
+            let session = state.session.read().await;
+            summaries.push(SessionSummary {
+                session_id: session.id.clone(),
+                question: session.question.clone(),
+                status: proto_session_status(&session.status),
+                participant_count: session.participants.len() as u32,
+            });
         }
         summaries
     }
@@ -335,6 +334,8 @@ impl Council for CouncilService {
             return Err(Status::already_exists("participant name already taken"));
         }
 
+        // Random UUID token — no TTL, signing, or IP binding. Sufficient for
+        // single-machine trusted hooks; revisit if exposed to untrusted networks.
         let token = uuid::Uuid::new_v4().to_string();
         session.participants.push(Participant {
             name: req.name.clone(),
@@ -342,6 +343,17 @@ impl Council for CouncilService {
         });
 
         eprintln!("Participant joined: {}", req.name);
+
+        // Check if we should start before building the response,
+        // so the joining participant sees the correct post-transition status.
+        let auto_start = session.participants.len() as u32 >= state.config.min_participants;
+        if auto_start {
+            eprintln!(
+                "Min participants reached ({}). Starting discussion.",
+                session.participants.len()
+            );
+            session.start_discussion();
+        }
 
         let response = JoinResponse {
             session_id: session.id.clone(),
@@ -353,15 +365,6 @@ impl Council for CouncilService {
             participant_token: token,
         };
 
-        // Check if we should start
-        let auto_start = session.participants.len() as u32 >= state.config.min_participants;
-        if auto_start {
-            eprintln!(
-                "Min participants reached ({}). Starting discussion.",
-                session.participants.len()
-            );
-            session.start_discussion();
-        }
         let round = session.current_round;
         let idx = session.current_speaker_idx;
         let turn_timeout = state.config.turn_timeout;

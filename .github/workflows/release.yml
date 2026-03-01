@@ -58,17 +58,21 @@ jobs:
           rustup default stable
           rustup target add ${{ matrix.target }}
 
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
       - name: Install cross (Linux ARM)
         if: matrix.cross
-        run: cargo install cross --git https://github.com/cross-rs/cross
+        run: cargo install cross --tag v0.2.5
 
       - name: Build release binaries
         if: "!matrix.cross"
-        run: cargo build --release --package council --target ${{ matrix.target }}
+        run: cargo build --release --locked --package council --target ${{ matrix.target }}
 
       - name: Build release binaries (cross)
         if: matrix.cross
-        run: cross build --release --package council --target ${{ matrix.target }}
+        run: cross build --release --locked --package council --target ${{ matrix.target }}
 
       - name: Determine version
         id: version
@@ -93,8 +97,8 @@ jobs:
         run: |
           staging="council-${{ steps.version.outputs.version }}-${{ matrix.target }}"
           mkdir "$staging"
-          cp target/${{ matrix.target }}/release/council-daemon.exe "$staging/" || true
-          cp target/${{ matrix.target }}/release/council-cli.exe "$staging/" || true
+          cp target/${{ matrix.target }}/release/council-daemon.exe "$staging/"
+          cp target/${{ matrix.target }}/release/council-cli.exe "$staging/"
           cp LICENSE "$staging/"
           7z a "$staging.zip" "$staging"
           echo "ASSET=$staging.zip" >> "$GITHUB_ENV"

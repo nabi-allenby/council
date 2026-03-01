@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::process::Command;
@@ -17,7 +18,7 @@ pub fn run_setup(port: Option<u16>) -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("Created {}", config_dir.display());
 
     // Write config (preserve existing if present)
-    let config_path = DaemonConfig::config_path().unwrap();
+    let config_path = DaemonConfig::config_path().ok_or("cannot determine config path")?;
     let mut config = if config_path.exists() {
         eprintln!(
             "Config already exists, preserving {}",
@@ -36,20 +37,30 @@ pub fn run_setup(port: Option<u16>) -> Result<(), Box<dyn std::error::Error>> {
     config.save()?;
     eprintln!("Wrote {}", config_path.display());
 
-    // Install hook scripts
-    let basic_path = hooks_dir.join("basic.sh");
-    fs::write(&basic_path, HOOK_BASIC)?;
-    set_executable(&basic_path)?;
-    eprintln!("Installed {}", basic_path.display());
-
-    let claude_path = hooks_dir.join("claude.sh");
-    fs::write(&claude_path, HOOK_CLAUDE)?;
-    set_executable(&claude_path)?;
-    eprintln!("Installed {}", claude_path.display());
+    // Install hook scripts (skip if already exist to preserve customizations)
+    install_hook(&hooks_dir, "basic.sh", HOOK_BASIC)?;
+    install_hook(&hooks_dir, "claude.sh", HOOK_CLAUDE)?;
 
     // Start daemon in background
     start_daemon(&config)?;
 
+    Ok(())
+}
+
+/// Install a hook script, skipping if a user-modified version already exists.
+fn install_hook(
+    hooks_dir: &std::path::Path,
+    name: &str,
+    content: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let path = hooks_dir.join(name);
+    if path.exists() {
+        eprintln!("Hook already exists, skipping {}", path.display());
+    } else {
+        fs::write(&path, content)?;
+        set_executable(&path)?;
+        eprintln!("Installed {}", path.display());
+    }
     Ok(())
 }
 
@@ -85,7 +96,9 @@ fn start_daemon(config: &DaemonConfig) -> Result<(), Box<dyn std::error::Error>>
         use std::os::unix::process::CommandExt;
         unsafe {
             cmd.pre_exec(|| {
-                libc::setsid();
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
                 Ok(())
             });
         }
@@ -185,23 +198,36 @@ pub fn run_logs(follow: bool, lines: usize) -> Result<(), Box<dyn std::error::Er
     }
 
     if follow {
-        // Use tail -f for follow mode
-        let status = Command::new("tail")
-            .arg("-f")
-            .arg("-n")
-            .arg(lines.to_string())
-            .arg(&log_path)
-            .status()?;
-        if !status.success() {
-            return Err("tail command failed".into());
+        #[cfg(unix)]
+        {
+            let status = Command::new("tail")
+                .arg("-f")
+                .arg("-n")
+                .arg(lines.to_string())
+                .arg(&log_path)
+                .status()?;
+            if !status.success() {
+                return Err("tail command failed".into());
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = lines;
+            return Err("follow mode is only supported on Unix systems".into());
         }
     } else {
-        // Read last N lines
+        // Read last N lines using a ring buffer to avoid loading entire file
         let file = fs::File::open(&log_path)?;
         let reader = BufReader::new(file);
-        let all_lines: Vec<String> = reader.lines().collect::<Result<_, _>>()?;
-        let start = all_lines.len().saturating_sub(lines);
-        for line in &all_lines[start..] {
+        let mut ring: VecDeque<String> = VecDeque::with_capacity(lines);
+        for line in reader.lines() {
+            let line = line?;
+            if ring.len() == lines {
+                ring.pop_front();
+            }
+            ring.push_back(line);
+        }
+        for line in &ring {
             println!("{}", line);
         }
     }

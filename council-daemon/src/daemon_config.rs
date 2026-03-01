@@ -98,11 +98,29 @@ impl DaemonConfig {
     }
 
     /// Load config from the default path. Returns default config if file doesn't exist.
+    /// Warns on stderr if the file exists but cannot be parsed.
     pub fn load() -> Self {
-        Self::config_path()
-            .and_then(|p| std::fs::read_to_string(p).ok())
-            .and_then(|s| toml::from_str(&s).ok())
-            .unwrap_or_default()
+        let path = match Self::config_path() {
+            Some(p) => p,
+            None => return Self::default(),
+        };
+
+        let content = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(_) => return Self::default(),
+        };
+
+        match toml::from_str(&content) {
+            Ok(config) => config,
+            Err(e) => {
+                eprintln!(
+                    "Warning: failed to parse {}, using defaults: {}",
+                    path.display(),
+                    e
+                );
+                Self::default()
+            }
+        }
     }
 
     /// Write config to the default path.

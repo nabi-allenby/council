@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -23,17 +23,20 @@ struct SessionState {
     config: SessionConfig,
 }
 
-// TODO: Completed sessions are never evicted — a long-running daemon will
-// accumulate session state (transcripts, votes) indefinitely. Add a TTL-based
-// eviction strategy for completed sessions.
+/// Holds up to `MAX_SESSIONS` sessions. When full, the oldest session is
+/// evicted (rolling window) to bound memory usage on long-running daemons.
 struct SessionStore {
     sessions: RwLock<HashMap<String, Arc<SessionState>>>,
+    order: RwLock<VecDeque<String>>,
 }
+
+const MAX_SESSIONS: usize = 10;
 
 impl SessionStore {
     fn new() -> Self {
         SessionStore {
             sessions: RwLock::new(HashMap::new()),
+            order: RwLock::new(VecDeque::new()),
         }
     }
 
@@ -47,6 +50,23 @@ impl SessionStore {
 
     async fn insert(&self, session_id: String, state: Arc<SessionState>) {
         let mut sessions = self.sessions.write().await;
+        let mut order = self.order.write().await;
+
+        // Evict oldest session(s) to stay within the limit
+        while order.len() >= MAX_SESSIONS {
+            if let Some(old_id) = order.pop_front() {
+                let evicted = sessions.remove(&old_id);
+                if let Some(s) = evicted {
+                    let sess = s.session.read().await;
+                    eprintln!(
+                        "Evicting session {} (status: {:?})",
+                        old_id, sess.status
+                    );
+                }
+            }
+        }
+
+        order.push_back(session_id.clone());
         sessions.insert(session_id, state);
     }
 

@@ -983,3 +983,60 @@ async fn test_join_empty_session_id_rejected() {
     assert!(result.is_err());
     assert_eq!(result.unwrap_err().code(), tonic::Code::InvalidArgument);
 }
+
+// ── Session eviction at max capacity ──
+
+#[tokio::test]
+async fn test_session_eviction_at_max_capacity() {
+    let (_url, mut c1) = start_daemon().await;
+
+    // Create 10 sessions (the max)
+    let mut session_ids = Vec::new();
+    for i in 0..10 {
+        let sid = create_session(&mut c1, &format!("Question {}?", i), 1, 2, 30).await;
+        session_ids.push(sid);
+    }
+
+    // All 10 should be accessible
+    let resp = c1
+        .list_sessions(ListSessionsRequest {})
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(resp.sessions.len(), 10);
+
+    // Creating an 11th should evict the oldest (session 0)
+    let sid_new = create_session(&mut c1, "Question 10?", 1, 2, 30).await;
+
+    let resp = c1
+        .list_sessions(ListSessionsRequest {})
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(resp.sessions.len(), 10);
+
+    // The oldest session should be gone
+    let result = c1
+        .get_session(GetSessionRequest {
+            session_id: session_ids[0].clone(),
+        })
+        .await;
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().code(), tonic::Code::NotFound);
+
+    // The second session should still exist
+    let result = c1
+        .get_session(GetSessionRequest {
+            session_id: session_ids[1].clone(),
+        })
+        .await;
+    assert!(result.is_ok());
+
+    // The new session should exist
+    let result = c1
+        .get_session(GetSessionRequest {
+            session_id: sid_new.clone(),
+        })
+        .await;
+    assert!(result.is_ok());
+}

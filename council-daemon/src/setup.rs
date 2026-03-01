@@ -41,7 +41,8 @@ pub fn run_setup(port: Option<u16>) -> Result<(), Box<dyn std::error::Error>> {
     if is_new_config {
         let agent_command = select_agent_command();
         let mut content = toml::to_string_pretty(&config)?;
-        writeln!(content, "\n[agent]\ncommand = {:?}", agent_command)?;
+        // writeln! on String is infallible; unwrap is safe here.
+        writeln!(content, "\n[agent]\ncommand = {:?}", agent_command).unwrap();
         fs::write(&config_path, content)?;
     } else {
         config.save()?;

@@ -11,7 +11,7 @@
 #   COUNCIL_AGENT_FILE       — Path to personality .md file
 #
 # The agent command receives a prompt on stdin and must print a response
-# on stdout. Example: "claude --print", "cat" (echo), custom scripts.
+# on stdout. Example: "claude -p", "cat" (echo), custom scripts.
 
 set -euo pipefail
 
@@ -26,6 +26,11 @@ if [ -n "${COUNCIL_AGENT_FILE:-}" ] && [ -f "$COUNCIL_AGENT_FILE" ]; then
   PERSONALITY=$(cat "$COUNCIL_AGENT_FILE")
 fi
 
+# Create temp files once; clean up on exit
+CONV_FILE=$(mktemp)
+VOTE_FILE=$(mktemp)
+trap "rm -f '$CONV_FILE' '$VOTE_FILE'" EXIT
+
 # Join the session
 JOIN_OUTPUT=$(council-cli join --addr "$ADDR" --session "$SESSION" --name "$NAME")
 TOKEN=$(echo "$JOIN_OUTPUT" | grep '^participant_token:' | cut -d' ' -f2)
@@ -34,6 +39,16 @@ QUESTION=$(echo "$JOIN_OUTPUT" | grep '^question:' | cut -d' ' -f2-)
 if [ -z "$TOKEN" ]; then
   echo "Failed to join session" >&2
   exit 1
+fi
+
+# Seed conversation file with personality (if provided)
+if [ -n "$PERSONALITY" ]; then
+  cat > "$CONV_FILE" <<EOF
+${PERSONALITY}
+
+---
+
+EOF
 fi
 
 # Participation loop
@@ -50,19 +65,11 @@ while true; do
       ROUND=$(echo "$WAIT_OUTPUT" | grep '^round:' | cut -d' ' -f2)
       TRANSCRIPT=$(echo "$WAIT_OUTPUT" | grep '^transcript:' | cut -d' ' -f2-)
 
-      # Build prompt with optional personality
-      CONV_FILE=$(mktemp)
-      trap "rm -f '$CONV_FILE'" EXIT
-
-      if [ -n "$PERSONALITY" ]; then
-        cat >> "$CONV_FILE" <<EOF
-${PERSONALITY}
-
----
-
-EOF
-      fi
+      # Append this round's prompt to the conversation file.
+      # The file accumulates across rounds so the agent sees its own
+      # prior reasoning alongside the server transcript.
       cat >> "$CONV_FILE" <<EOF
+=== ROUND $ROUND PROMPT ===
 You are ${NAME} in a council deliberation.
 Question: ${QUESTION}
 Round: ${ROUND}
@@ -118,16 +125,16 @@ EOF
     vote_phase)
       TRANSCRIPT=$(echo "$WAIT_OUTPUT" | grep '^transcript:' | cut -d' ' -f2-)
 
-      VOTE_FILE=$(mktemp)
-      trap "rm -f '$CONV_FILE' '$VOTE_FILE'" EXIT
-
+      # Build vote prompt in a separate file (personality + vote instructions)
       if [ -n "$PERSONALITY" ]; then
-        cat >> "$VOTE_FILE" <<EOF
+        cat > "$VOTE_FILE" <<EOF
 ${PERSONALITY}
 
 ---
 
 EOF
+      else
+        : > "$VOTE_FILE"
       fi
       cat >> "$VOTE_FILE" <<EOF
 You are ${NAME} in a council deliberation.

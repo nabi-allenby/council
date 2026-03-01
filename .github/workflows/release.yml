@@ -39,10 +39,6 @@ jobs:
             runner: windows-latest
             cross: false
             archive: zip
-          - target: aarch64-pc-windows-msvc
-            runner: windows-latest
-            cross: false
-            archive: zip
 
     steps:
       - uses: actions/checkout@v4

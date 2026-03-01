@@ -178,12 +178,16 @@ pub fn run_stop() -> Result<(), Box<dyn std::error::Error>> {
     for _ in 0..10 {
         std::thread::sleep(std::time::Duration::from_millis(200));
         if !process_alive(pid) {
-            break;
+            let _ = fs::remove_file(&pid_path);
+            eprintln!("Daemon stopped");
+            return Ok(());
         }
     }
 
-    let _ = fs::remove_file(&pid_path);
-    eprintln!("Daemon stopped");
+    eprintln!(
+        "Warning: daemon (PID {}) did not exit within 2 seconds after SIGTERM",
+        pid
+    );
 
     Ok(())
 }

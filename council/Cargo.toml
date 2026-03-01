@@ -15,6 +15,6 @@ name = "council-cli"
 path = "src/bin/council-cli.rs"
 
 [dependencies]
-council-daemon = { path = "../council-daemon" }
-council-cli = { path = "../council-cli" }
+council-daemon = { path = "../council-daemon", version = "0.1.0" }
+council-cli = { path = "../council-cli", version = "0.1.0" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

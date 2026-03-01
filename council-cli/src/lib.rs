@@ -476,26 +476,7 @@ async fn follow_session(
                 })
                 .await?
                 .into_inner();
-            let outcome = match results.outcome {
-                x if x == council_proto::Outcome::Approved as i32 => "APPROVED",
-                x if x == council_proto::Outcome::Rejected as i32 => "REJECTED",
-                _ => "UNKNOWN",
-            };
-            println!("outcome: {}", outcome);
-            println!("yay_count: {}", results.yay_count);
-            println!("nay_count: {}", results.nay_count);
-            for v in &results.votes {
-                let choice = match v.choice {
-                    x if x == council_proto::VoteChoice::Yay as i32 => "yay",
-                    x if x == council_proto::VoteChoice::Nay as i32 => "nay",
-                    _ => "unknown",
-                };
-                println!("vote: {} {} \"{}\"", v.participant, choice, v.reason);
-            }
-            if !results.decision_record.is_empty() {
-                println!("---");
-                println!("{}", results.decision_record);
-            }
+            print_results(&results);
             return Ok(());
         }
     }
@@ -595,15 +576,20 @@ async fn run_vote(
 
 async fn run_results(addr: &str, session: &str) -> Result<(), Box<dyn std::error::Error>> {
     let resp = client::results(addr, session).await?;
-    let outcome = match resp.outcome {
+    print_results(&resp);
+    Ok(())
+}
+
+fn print_results(results: &council_proto::ResultsResponse) {
+    let outcome = match results.outcome {
         x if x == council_proto::Outcome::Approved as i32 => "APPROVED",
         x if x == council_proto::Outcome::Rejected as i32 => "REJECTED",
         _ => "UNKNOWN",
     };
     println!("outcome: {}", outcome);
-    println!("yay_count: {}", resp.yay_count);
-    println!("nay_count: {}", resp.nay_count);
-    for v in &resp.votes {
+    println!("yay_count: {}", results.yay_count);
+    println!("nay_count: {}", results.nay_count);
+    for v in &results.votes {
         let choice = match v.choice {
             x if x == council_proto::VoteChoice::Yay as i32 => "yay",
             x if x == council_proto::VoteChoice::Nay as i32 => "nay",
@@ -611,11 +597,10 @@ async fn run_results(addr: &str, session: &str) -> Result<(), Box<dyn std::error
         };
         println!("vote: {} {} \"{}\"", v.participant, choice, v.reason);
     }
-    if !resp.decision_record.is_empty() {
+    if !results.decision_record.is_empty() {
         println!("---");
-        println!("{}", resp.decision_record);
+        println!("{}", results.decision_record);
     }
-    Ok(())
 }
 
 fn format_wait_status(status: i32) -> &'static str {

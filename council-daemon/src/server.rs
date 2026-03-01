@@ -90,12 +90,20 @@ impl SessionStore {
         order.retain(|id| id != session_id);
     }
 
-    async fn list(&self) -> Vec<(String, Arc<SessionState>)> {
+    async fn list_summaries(&self) -> Vec<SessionSummary> {
         let sessions = self.sessions.read().await;
-        sessions
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect()
+        let mut summaries = Vec::with_capacity(sessions.len());
+        for (_, state) in sessions.iter() {
+            if let Ok(session) = state.session.try_read() {
+                summaries.push(SessionSummary {
+                    session_id: session.id.clone(),
+                    question: session.question.clone(),
+                    status: proto_session_status(&session.status),
+                    participant_count: session.participants.len() as u32,
+                });
+            }
+        }
+        summaries
     }
 }
 
@@ -224,7 +232,7 @@ impl Council for CouncilService {
         if req.question.trim().is_empty() {
             return Err(Status::invalid_argument("question is required"));
         }
-        if req.question.len() > 1000 {
+        if req.question.chars().count() > 1000 {
             return Err(Status::invalid_argument(
                 "question must be at most 1000 characters",
             ));
@@ -297,19 +305,7 @@ impl Council for CouncilService {
         &self,
         _request: Request<ListSessionsRequest>,
     ) -> Result<Response<ListSessionsResponse>, Status> {
-        let entries = self.store.list().await;
-        let mut sessions = Vec::with_capacity(entries.len());
-
-        for (_id, state) in entries {
-            let session = state.session.read().await;
-            sessions.push(SessionSummary {
-                session_id: session.id.clone(),
-                question: session.question.clone(),
-                status: proto_session_status(&session.status),
-                participant_count: session.participants.len() as u32,
-            });
-        }
-
+        let sessions = self.store.list_summaries().await;
         Ok(Response::new(ListSessionsResponse { sessions }))
     }
 
@@ -319,7 +315,7 @@ impl Council for CouncilService {
         if req.name.trim().is_empty() {
             return Err(Status::invalid_argument("name is required"));
         }
-        if req.name.len() > 100 {
+        if req.name.chars().count() > 100 {
             return Err(Status::invalid_argument(
                 "name must be at most 100 characters",
             ));
@@ -358,21 +354,21 @@ impl Council for CouncilService {
         };
 
         // Check if we should start
-        if session.participants.len() as u32 >= state.config.min_participants {
+        let auto_start = session.participants.len() as u32 >= state.config.min_participants;
+        if auto_start {
             eprintln!(
                 "Min participants reached ({}). Starting discussion.",
                 session.participants.len()
             );
             session.start_discussion();
-            let round = session.current_round;
-            let idx = session.current_speaker_idx;
-            let turn_timeout = state.config.turn_timeout;
-            drop(session);
-            state.version_tx.send_modify(|v| *v += 1);
+        }
+        let round = session.current_round;
+        let idx = session.current_speaker_idx;
+        let turn_timeout = state.config.turn_timeout;
+        drop(session);
+        state.version_tx.send_modify(|v| *v += 1);
+        if auto_start {
             spawn_turn_timeout(state, turn_timeout, round, idx);
-        } else {
-            drop(session);
-            state.version_tx.send_modify(|v| *v += 1);
         }
 
         Ok(Response::new(response))
@@ -411,7 +407,7 @@ impl Council for CouncilService {
         if req.position.trim().is_empty() {
             return Err(Status::invalid_argument("position is required"));
         }
-        if req.position.len() > 300 {
+        if req.position.chars().count() > 300 {
             return Err(Status::invalid_argument(
                 "position must be at most 300 characters",
             ));
@@ -486,7 +482,7 @@ impl Council for CouncilService {
         if req.reason.trim().is_empty() {
             return Err(Status::invalid_argument("reason is required"));
         }
-        if req.reason.len() > 500 {
+        if req.reason.chars().count() > 500 {
             return Err(Status::invalid_argument(
                 "reason must be at most 500 characters",
             ));

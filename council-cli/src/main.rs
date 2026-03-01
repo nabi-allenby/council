@@ -359,8 +359,19 @@ async fn run_create(
 
     let min_p = min_participants.unwrap_or(participants.len() as u32);
 
-    let resp = client::create_session(addr, question, rounds, min_p, join_timeout, turn_timeout)
-        .await?;
+    // Reuse a single gRPC client for all RPCs in this flow
+    let mut rpc = client::connect(addr).await?;
+
+    let resp = rpc
+        .create_session(council_proto::CreateSessionRequest {
+            question: question.to_string(),
+            rounds,
+            min_participants: min_p,
+            join_timeout_seconds: join_timeout,
+            turn_timeout_seconds: turn_timeout,
+        })
+        .await?
+        .into_inner();
     let session_id = resp.session_id;
     eprintln!("session_id: {}", session_id);
 
@@ -378,71 +389,13 @@ async fn run_create(
         children.push((name.clone(), child));
     }
 
-    if follow {
-        eprintln!("Following session {}...", session_id);
-        let mut consecutive_errors = 0u32;
-        loop {
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    let result = if follow {
+        follow_session(&mut rpc, &session_id).await
+    } else {
+        Ok(())
+    };
 
-            let status = match client::get_session(addr, &session_id).await {
-                Ok(s) => {
-                    consecutive_errors = 0;
-                    s
-                }
-                Err(e) => {
-                    consecutive_errors += 1;
-                    if consecutive_errors >= 5 {
-                        return Err(
-                            format!("lost connection to daemon after 5 retries: {}", e).into(),
-                        );
-                    }
-                    eprintln!(
-                        "Warning: poll failed (attempt {}/5): {}",
-                        consecutive_errors, e
-                    );
-                    continue;
-                }
-            };
-
-            let status_str = format_session_status(status.status);
-            eprintln!(
-                "[{}] status={} round={}/{} participants={}",
-                session_id,
-                status_str,
-                status.current_round,
-                status.total_rounds,
-                status.participants.join(", ")
-            );
-
-            if status.status == council_proto::SessionStatus::Completed as i32 {
-                // Fetch and print results
-                let results = client::results(addr, &session_id).await?;
-                let outcome = match results.outcome {
-                    x if x == council_proto::Outcome::Approved as i32 => "APPROVED",
-                    x if x == council_proto::Outcome::Rejected as i32 => "REJECTED",
-                    _ => "UNKNOWN",
-                };
-                println!("outcome: {}", outcome);
-                println!("yay_count: {}", results.yay_count);
-                println!("nay_count: {}", results.nay_count);
-                for v in &results.votes {
-                    let choice = match v.choice {
-                        x if x == council_proto::VoteChoice::Yay as i32 => "yay",
-                        x if x == council_proto::VoteChoice::Nay as i32 => "nay",
-                        _ => "unknown",
-                    };
-                    println!("vote: {} {} \"{}\"", v.participant, choice, v.reason);
-                }
-                if !results.decision_record.is_empty() {
-                    println!("---");
-                    println!("{}", results.decision_record);
-                }
-                break;
-            }
-        }
-    }
-
-    // Wait for hook processes to finish
+    // Always wait for hook processes, even on error
     for (name, mut child) in children {
         match child.wait().await {
             Ok(status) if !status.success() => {
@@ -455,7 +408,83 @@ async fn run_create(
         }
     }
 
-    Ok(())
+    result
+}
+
+async fn follow_session(
+    rpc: &mut council_proto::council_client::CouncilClient<tonic::transport::Channel>,
+    session_id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    eprintln!("Following session {}...", session_id);
+    let mut consecutive_errors = 0u32;
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+        let status = match rpc
+            .get_session(council_proto::GetSessionRequest {
+                session_id: session_id.to_string(),
+            })
+            .await
+        {
+            Ok(resp) => {
+                consecutive_errors = 0;
+                resp.into_inner()
+            }
+            Err(e) => {
+                consecutive_errors += 1;
+                if consecutive_errors >= 5 {
+                    return Err(
+                        format!("lost connection to daemon after 5 retries: {}", e).into(),
+                    );
+                }
+                eprintln!(
+                    "Warning: poll failed (attempt {}/5): {}",
+                    consecutive_errors, e
+                );
+                continue;
+            }
+        };
+
+        let status_str = format_session_status(status.status);
+        eprintln!(
+            "[{}] status={} round={}/{} participants={}",
+            session_id,
+            status_str,
+            status.current_round,
+            status.total_rounds,
+            status.participants.join(", ")
+        );
+
+        if status.status == council_proto::SessionStatus::Completed as i32 {
+            let results = rpc
+                .results(council_proto::ResultsRequest {
+                    session_id: session_id.to_string(),
+                })
+                .await?
+                .into_inner();
+            let outcome = match results.outcome {
+                x if x == council_proto::Outcome::Approved as i32 => "APPROVED",
+                x if x == council_proto::Outcome::Rejected as i32 => "REJECTED",
+                _ => "UNKNOWN",
+            };
+            println!("outcome: {}", outcome);
+            println!("yay_count: {}", results.yay_count);
+            println!("nay_count: {}", results.nay_count);
+            for v in &results.votes {
+                let choice = match v.choice {
+                    x if x == council_proto::VoteChoice::Yay as i32 => "yay",
+                    x if x == council_proto::VoteChoice::Nay as i32 => "nay",
+                    _ => "unknown",
+                };
+                println!("vote: {} {} \"{}\"", v.participant, choice, v.reason);
+            }
+            if !results.decision_record.is_empty() {
+                println!("---");
+                println!("{}", results.decision_record);
+            }
+            return Ok(());
+        }
+    }
 }
 
 async fn run_list(addr: &str) -> Result<(), Box<dyn std::error::Error>> {

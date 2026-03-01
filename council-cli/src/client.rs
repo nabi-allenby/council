@@ -14,27 +14,6 @@ pub async fn connect(addr: &str) -> Result<CouncilClient<Channel>, CliError> {
     Ok(client)
 }
 
-pub async fn create_session(
-    addr: &str,
-    question: &str,
-    rounds: u32,
-    min_participants: u32,
-    join_timeout_seconds: u32,
-    turn_timeout_seconds: u32,
-) -> Result<CreateSessionResponse, CliError> {
-    let mut client = connect(addr).await?;
-    let response = client
-        .create_session(CreateSessionRequest {
-            question: question.to_string(),
-            rounds,
-            min_participants,
-            join_timeout_seconds,
-            turn_timeout_seconds,
-        })
-        .await?;
-    Ok(response.into_inner())
-}
-
 pub async fn get_session(addr: &str, session_id: &str) -> Result<GetSessionResponse, CliError> {
     let mut client = connect(addr).await?;
     let response = client

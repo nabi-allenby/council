@@ -60,3 +60,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --package council-cli
       - run: cargo test --package council-cli
+
+  test-council:
+    name: Test council
+    runs-on: ubuntu-latest
+    needs: [fmt, clippy]
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --package council
+      - run: cargo test --package council

@@ -4,24 +4,23 @@ use std::path::{Path, PathBuf};
 
 use chrono::{Local, Utc};
 
-use crate::error::CouncilError;
-use crate::orchestrator::title_case;
-use crate::types::{Session, VoteChoice};
+use crate::error::DaemonError;
+use crate::types::{title_case, Session, VoteChoice};
 
 pub fn generate_report(session: &Session) -> String {
     let outcome = session.outcome();
     let yays: Vec<_> = session
         .votes
         .iter()
-        .filter(|v| v.vote == VoteChoice::Yay)
+        .filter(|v| v.choice == VoteChoice::Yay)
         .collect();
     let nays: Vec<_> = session
         .votes
         .iter()
-        .filter(|v| v.vote == VoteChoice::Nay)
+        .filter(|v| v.choice == VoteChoice::Nay)
         .collect();
     let now = Utc::now().format("%Y-%m-%d %H:%M UTC").to_string();
-    let rotation = session.rotation();
+    let rotation = session.participant_names();
 
     let mut lines = vec![
         "# Council Report".to_string(),
@@ -37,34 +36,26 @@ pub fn generate_report(session: &Session) -> String {
         String::new(),
         format!("> {}", session.question),
         String::new(),
-    ];
-    if let Some(motion) = &session.crafted_motion {
-        lines.push("## Motion".to_string());
-        lines.push(String::new());
-        lines.push(format!("> {}", motion));
-        lines.push(String::new());
-    }
-    lines.extend([
         "---".to_string(),
         String::new(),
-    ]);
+    ];
 
     // Vote table
     lines.extend([
         "## Vote Results".to_string(),
         String::new(),
-        "| Agent | Vote | Reason |".to_string(),
-        "|-------|:----:|--------|".to_string(),
+        "| Participant | Vote | Reason |".to_string(),
+        "|-------------|:----:|--------|".to_string(),
     ]);
     for v in &session.votes {
-        let vote_str = if v.vote == VoteChoice::Yay {
+        let vote_str = if v.choice == VoteChoice::Yay {
             "YAY"
         } else {
             "NAY"
         };
         lines.push(format!(
             "| {} | **{}** | {} |",
-            title_case(&v.agent),
+            title_case(&v.participant),
             vote_str,
             v.reason
         ));
@@ -75,8 +66,8 @@ pub fn generate_report(session: &Session) -> String {
     let max_round = session.turns.iter().map(|t| t.round).max().unwrap_or(0);
     lines.extend(["## Position Evolution".to_string(), String::new()]);
 
-    let mut header = "| Agent |".to_string();
-    let mut separator = "|-------|".to_string();
+    let mut header = "| Participant |".to_string();
+    let mut separator = "|-------------|".to_string();
     for r in 1..=max_round {
         header += &format!(" Round {} |", r);
         separator += "---------|";
@@ -84,14 +75,14 @@ pub fn generate_report(session: &Session) -> String {
     lines.push(header);
     lines.push(separator);
 
-    for role in &rotation {
+    for name in &rotation {
         let mut positions: HashMap<u32, String> = HashMap::new();
         for turn in &session.turns {
-            if turn.agent == *role {
-                positions.insert(turn.round, turn.parsed.position.clone());
+            if turn.participant == *name {
+                positions.insert(turn.round, turn.position.clone());
             }
         }
-        let mut row = format!("| {} |", title_case(role));
+        let mut row = format!("| {} |", title_case(name));
         for r in 1..=max_round {
             let pos = positions.get(&r).map(|s| s.as_str()).unwrap_or("-");
             row += &format!(" {} |", truncate(pos, 80));
@@ -104,8 +95,8 @@ pub fn generate_report(session: &Session) -> String {
     let mut concerns = Vec::new();
     for turn in &session.turns {
         if turn.round == max_round {
-            for c in &turn.parsed.concerns {
-                concerns.push(format!("- **{}**: {}", title_case(&turn.agent), c));
+            for c in &turn.concerns {
+                concerns.push(format!("- **{}**: {}", title_case(&turn.participant), c));
             }
         }
     }
@@ -136,27 +127,15 @@ pub fn generate_report(session: &Session) -> String {
         lines.push(format!(
             "### Turn {}: {}",
             i + 1,
-            title_case(&turn.agent)
+            title_case(&turn.participant)
         ));
-        lines.push(format!("**Position:** {}", turn.parsed.position));
-        if !turn.parsed.reasoning.is_empty() {
-            lines.push(format!(
-                "**Reasoning:** {}",
-                turn.parsed.reasoning.join(" | ")
-            ));
+        lines.push(format!("**Position:** {}", turn.position));
+        if !turn.reasoning.is_empty() {
+            lines.push(format!("**Reasoning:** {}", turn.reasoning.join(" | ")));
         }
-        if !turn.parsed.concerns.is_empty() {
-            lines.push(format!(
-                "**Concerns:** {}",
-                turn.parsed.concerns.join(" | ")
-            ));
+        if !turn.concerns.is_empty() {
+            lines.push(format!("**Concerns:** {}", turn.concerns.join(" | ")));
         }
-        if !turn.parsed.updated_by.is_empty() {
-            let names: Vec<String> = turn.parsed.updated_by.iter().map(|t| title_case(t)).collect();
-            lines.push(format!("**Influenced by:** {}", names.join(", ")));
-        }
-        lines.push(String::new());
-        lines.push(turn.content.clone());
         lines.push(String::new());
         lines.push("---".to_string());
         lines.push(String::new());
@@ -166,14 +145,14 @@ pub fn generate_report(session: &Session) -> String {
     lines.push("## Vote Round".to_string());
     lines.push(String::new());
     for v in &session.votes {
-        let vote_str = if v.vote == VoteChoice::Yay {
+        let vote_str = if v.choice == VoteChoice::Yay {
             "YAY"
         } else {
             "NAY"
         };
         lines.push(format!(
             "### {}: **{}**",
-            title_case(&v.agent),
+            title_case(&v.participant),
             vote_str
         ));
         lines.push(v.reason.clone());
@@ -185,14 +164,13 @@ pub fn generate_report(session: &Session) -> String {
     lines.join("\n")
 }
 
-pub fn save_report(session: &Session, logs_dir: &Path) -> Result<PathBuf, CouncilError> {
-    fs::create_dir_all(logs_dir).map_err(|e| {
-        CouncilError::FileNotFound(format!("Cannot create logs directory: {}", e))
-    })?;
+pub fn save_report(session: &Session, logs_dir: &Path) -> Result<PathBuf, DaemonError> {
+    fs::create_dir_all(logs_dir)
+        .map_err(|e| DaemonError::Io(format!("Cannot create logs directory: {}", e)))?;
 
     let timestamp = Local::now().format("%Y%m%d-%H%M%S").to_string();
     let slug: String = session
-        .motion()
+        .question
         .chars()
         .take(40)
         .collect::<String>()
@@ -212,15 +190,19 @@ pub fn save_report(session: &Session, logs_dir: &Path) -> Result<PathBuf, Counci
     let path = logs_dir.join(filename);
 
     let report = generate_report(session);
-    fs::write(&path, report)
-        .map_err(|e| CouncilError::FileNotFound(format!("Cannot write report: {}", e)))?;
+    fs::write(&path, report).map_err(|e| DaemonError::Io(format!("Cannot write report: {}", e)))?;
 
     Ok(path)
 }
 
 fn truncate(text: &str, max_len: usize) -> String {
-    if text.len() > max_len {
-        format!("{}...", &text[..max_len - 3])
+    if text.chars().count() > max_len {
+        let end = text
+            .char_indices()
+            .nth(max_len - 3)
+            .map(|(i, _)| i)
+            .unwrap_or(text.len());
+        format!("{}...", &text[..end])
     } else {
         text.to_string()
     }

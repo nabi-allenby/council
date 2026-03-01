@@ -1,1 +1,0 @@
-This is Round 2 — the refinement round. You have read the full Round 1 transcript. Engage with other agents' positions. Refine, challenge, or update your own. Note which agents influenced your thinking in the updated_by field.

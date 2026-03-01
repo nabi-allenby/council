@@ -474,6 +474,10 @@ async fn run_create(
             .env("COUNCIL_PARTICIPANT_NAME", name)
             .env("COUNCIL_ADDR", addr)
             .env("COUNCIL_AGENT_COMMAND", agent_command)
+            // Clear nesting-guard vars so LLM CLIs (e.g. claude -p) don't
+            // refuse to run when council-cli is invoked from inside an LLM.
+            .env_remove("CLAUDECODE")
+            .env_remove("CLAUDE_CODE_ENTRYPOINT")
             .stdin(std::process::Stdio::null());
 
         // If --agents-dir given, look for a personality file for this participant

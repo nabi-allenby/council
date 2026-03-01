@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-use council_daemon::config::DaemonConfig;
 use council_daemon::server::CouncilService;
 use council_proto::council_client::CouncilClient;
 use council_proto::council_server::CouncilServer;
@@ -9,25 +8,13 @@ use tokio::net::TcpListener;
 use tonic::transport::Channel;
 use tonic::transport::Server;
 
-/// Helper: start a daemon on a random port and return the address + a client.
-async fn start_daemon(
-    question: &str,
-    rounds: u32,
-    min_participants: u32,
-    join_timeout_secs: u64,
-) -> (String, CouncilClient<Channel>) {
+/// Helper: start a bare daemon on a random port and return the address + a client.
+async fn start_daemon() -> (String, CouncilClient<Channel>) {
     let listener = TcpListener::bind("[::1]:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let url = format!("http://{}", addr);
 
-    let config = DaemonConfig {
-        rounds,
-        min_participants,
-        join_timeout: Duration::from_secs(join_timeout_secs),
-        turn_timeout: Duration::from_secs(120),
-    };
-    let service = CouncilService::new(question.to_string(), config);
-    service.spawn_lobby_timeout();
+    let service = CouncilService::new();
 
     let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
     tokio::spawn(async move {
@@ -45,11 +32,38 @@ async fn start_daemon(
     (url, client)
 }
 
+/// Helper: create a session and return session_id
+async fn create_session(
+    client: &mut CouncilClient<Channel>,
+    question: &str,
+    rounds: u32,
+    min_participants: u32,
+    join_timeout_secs: u32,
+) -> String {
+    let resp = client
+        .create_session(CreateSessionRequest {
+            question: question.to_string(),
+            rounds,
+            min_participants,
+            join_timeout_seconds: join_timeout_secs,
+            turn_timeout_seconds: 120,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    resp.session_id
+}
+
 /// Helper: join a participant and return (session_id, token)
-async fn join(client: &mut CouncilClient<Channel>, name: &str) -> (String, String) {
+async fn join(
+    client: &mut CouncilClient<Channel>,
+    name: &str,
+    session_id: &str,
+) -> (String, String) {
     let resp = client
         .join(JoinRequest {
             name: name.to_string(),
+            session_id: session_id.to_string(),
         })
         .await
         .unwrap()
@@ -125,14 +139,16 @@ async fn vote(
 
 #[tokio::test]
 async fn test_full_session_3_participants() {
-    let (url, mut c1) = start_daemon("Should we adopt Rust?", 1, 3, 30).await;
+    let (url, mut c1) = start_daemon().await;
     let mut c2 = CouncilClient::connect(url.clone()).await.unwrap();
     let mut c3 = CouncilClient::connect(url).await.unwrap();
 
+    let sid = create_session(&mut c1, "Should we adopt Rust?", 1, 3, 30).await;
+
     // Join
-    let (sid, t1) = join(&mut c1, "Alice").await;
-    let (_, t2) = join(&mut c2, "Bob").await;
-    let (_, t3) = join(&mut c3, "Carol").await;
+    let (_, t1) = join(&mut c1, "Alice", &sid).await;
+    let (_, t2) = join(&mut c2, "Bob", &sid).await;
+    let (_, t3) = join(&mut c3, "Carol", &sid).await;
 
     // Round 1: Alice's turn
     let w = wait_for_status(&mut c1, &sid, "Alice", &t1, 5).await;
@@ -213,11 +229,13 @@ async fn test_full_session_3_participants() {
 #[tokio::test]
 async fn test_join_timeout_starts_with_fewer_participants() {
     // min_participants=5 but join_timeout=1s, only 2 join
-    let (url, mut c1) = start_daemon("Test question?", 1, 5, 1).await;
+    let (url, mut c1) = start_daemon().await;
     let mut c2 = CouncilClient::connect(url).await.unwrap();
 
-    let (sid, t1) = join(&mut c1, "Alice").await;
-    let (_, t2) = join(&mut c2, "Bob").await;
+    let sid = create_session(&mut c1, "Test question?", 1, 5, 1).await;
+
+    let (_, t1) = join(&mut c1, "Alice", &sid).await;
+    let (_, t2) = join(&mut c2, "Bob", &sid).await;
 
     // Wait for lobby timeout to fire (1 second)
     tokio::time::sleep(Duration::from_millis(1500)).await;
@@ -252,11 +270,13 @@ async fn test_join_timeout_starts_with_fewer_participants() {
 
 #[tokio::test]
 async fn test_respond_out_of_turn_rejected() {
-    let (url, mut c1) = start_daemon("Test question?", 1, 2, 30).await;
+    let (url, mut c1) = start_daemon().await;
     let mut c2 = CouncilClient::connect(url).await.unwrap();
 
-    let (sid, _t1) = join(&mut c1, "Alice").await;
-    let (_, t2) = join(&mut c2, "Bob").await;
+    let sid = create_session(&mut c1, "Test question?", 1, 2, 30).await;
+
+    let (_, _t1) = join(&mut c1, "Alice", &sid).await;
+    let (_, t2) = join(&mut c2, "Bob", &sid).await;
 
     // It's Alice's turn, Bob tries to respond
     let result = c2
@@ -280,11 +300,13 @@ async fn test_respond_out_of_turn_rejected() {
 
 #[tokio::test]
 async fn test_vote_before_discussion_rejected() {
-    let (url, mut c1) = start_daemon("Test question?", 1, 2, 30).await;
+    let (url, mut c1) = start_daemon().await;
     let mut c2 = CouncilClient::connect(url).await.unwrap();
 
-    let (sid, t1) = join(&mut c1, "Alice").await;
-    join(&mut c2, "Bob").await;
+    let sid = create_session(&mut c1, "Test question?", 1, 2, 30).await;
+
+    let (_, t1) = join(&mut c1, "Alice", &sid).await;
+    join(&mut c2, "Bob", &sid).await;
 
     // Try to vote while still in discussion phase
     let result = c1
@@ -307,13 +329,15 @@ async fn test_vote_before_discussion_rejected() {
 
 #[tokio::test]
 async fn test_results_reflect_majority() {
-    let (url, mut c1) = start_daemon("Should we merge?", 1, 3, 30).await;
+    let (url, mut c1) = start_daemon().await;
     let mut c2 = CouncilClient::connect(url.clone()).await.unwrap();
     let mut c3 = CouncilClient::connect(url).await.unwrap();
 
-    let (sid, t1) = join(&mut c1, "A").await;
-    let (_, t2) = join(&mut c2, "B").await;
-    let (_, t3) = join(&mut c3, "C").await;
+    let sid = create_session(&mut c1, "Should we merge?", 1, 3, 30).await;
+
+    let (_, t1) = join(&mut c1, "A", &sid).await;
+    let (_, t2) = join(&mut c2, "B", &sid).await;
+    let (_, t3) = join(&mut c3, "C", &sid).await;
 
     // Discussion round: A, B, C each respond in order
     let w = wait_for_status(&mut c1, &sid, "A", &t1, 5).await;
@@ -356,13 +380,15 @@ async fn test_results_reflect_majority() {
 
 #[tokio::test]
 async fn test_concurrent_clients_no_deadlock() {
-    let (url, mut c1) = start_daemon("Concurrent test?", 1, 3, 30).await;
+    let (url, mut c1) = start_daemon().await;
     let mut c2 = CouncilClient::connect(url.clone()).await.unwrap();
     let mut c3 = CouncilClient::connect(url).await.unwrap();
 
-    let (sid, t1) = join(&mut c1, "P1").await;
-    let (_, t2) = join(&mut c2, "P2").await;
-    let (_, t3) = join(&mut c3, "P3").await;
+    let sid = create_session(&mut c1, "Concurrent test?", 1, 3, 30).await;
+
+    let (_, t1) = join(&mut c1, "P1", &sid).await;
+    let (_, t2) = join(&mut c2, "P2", &sid).await;
+    let (_, t3) = join(&mut c3, "P3", &sid).await;
 
     // All three wait concurrently
     let sid_c = sid.clone();
@@ -418,12 +444,15 @@ async fn test_concurrent_clients_no_deadlock() {
 
 #[tokio::test]
 async fn test_duplicate_name_rejected() {
-    let (_url, mut c1) = start_daemon("Test?", 1, 3, 30).await;
+    let (_url, mut c1) = start_daemon().await;
 
-    join(&mut c1, "Alice").await;
+    let sid = create_session(&mut c1, "Test?", 1, 3, 30).await;
+
+    join(&mut c1, "Alice", &sid).await;
     let result = c1
         .join(JoinRequest {
             name: "Alice".to_string(),
+            session_id: sid.clone(),
         })
         .await;
 
@@ -435,11 +464,13 @@ async fn test_duplicate_name_rejected() {
 
 #[tokio::test]
 async fn test_invalid_token_rejected() {
-    let (url, mut c1) = start_daemon("Test?", 1, 2, 30).await;
+    let (url, mut c1) = start_daemon().await;
     let mut c2 = CouncilClient::connect(url).await.unwrap();
 
-    let (sid, _t1) = join(&mut c1, "Alice").await;
-    join(&mut c2, "Bob").await;
+    let sid = create_session(&mut c1, "Test?", 1, 2, 30).await;
+
+    let (_, _t1) = join(&mut c1, "Alice", &sid).await;
+    join(&mut c2, "Bob", &sid).await;
 
     // Try with wrong token
     let result = c1
@@ -459,18 +490,21 @@ async fn test_invalid_token_rejected() {
 
 #[tokio::test]
 async fn test_join_after_lobby_closed_rejected() {
-    let (url, mut c1) = start_daemon("Test?", 1, 2, 30).await;
+    let (url, mut c1) = start_daemon().await;
     let mut c2 = CouncilClient::connect(url.clone()).await.unwrap();
     let mut c3 = CouncilClient::connect(url).await.unwrap();
 
+    let sid = create_session(&mut c1, "Test?", 1, 2, 30).await;
+
     // Two joins meet min_participants, lobby closes
-    join(&mut c1, "Alice").await;
-    join(&mut c2, "Bob").await;
+    join(&mut c1, "Alice", &sid).await;
+    join(&mut c2, "Bob", &sid).await;
 
     // Third join should fail
     let result = c3
         .join(JoinRequest {
             name: "Carol".to_string(),
+            session_id: sid.clone(),
         })
         .await;
 
@@ -482,11 +516,13 @@ async fn test_join_after_lobby_closed_rejected() {
 
 #[tokio::test]
 async fn test_double_vote_rejected() {
-    let (url, mut c1) = start_daemon("Test?", 1, 2, 30).await;
+    let (url, mut c1) = start_daemon().await;
     let mut c2 = CouncilClient::connect(url).await.unwrap();
 
-    let (sid, t1) = join(&mut c1, "Alice").await;
-    let (_, t2) = join(&mut c2, "Bob").await;
+    let sid = create_session(&mut c1, "Test?", 1, 2, 30).await;
+
+    let (_, t1) = join(&mut c1, "Alice", &sid).await;
+    let (_, t2) = join(&mut c2, "Bob", &sid).await;
 
     // Discussion
     let w = wait_for_status(&mut c1, &sid, "Alice", &t1, 5).await;
@@ -521,35 +557,25 @@ async fn test_double_vote_rejected() {
 
 #[tokio::test]
 async fn test_turn_timeout_skips_participant() {
-    // Use a very short turn timeout (1s)
-    let listener = TcpListener::bind("[::1]:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let url = format!("http://{}", addr);
-
-    let config = DaemonConfig {
-        rounds: 1,
-        min_participants: 2,
-        join_timeout: Duration::from_secs(30),
-        turn_timeout: Duration::from_secs(1),
-    };
-    let service = CouncilService::new("Timeout test?".to_string(), config);
-    service.spawn_lobby_timeout();
-
-    let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
-    tokio::spawn(async move {
-        Server::builder()
-            .add_service(CouncilServer::new(service))
-            .serve_with_incoming(incoming)
-            .await
-            .unwrap();
-    });
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    let mut c1 = CouncilClient::connect(url.clone()).await.unwrap();
+    let (url, mut c1) = start_daemon().await;
     let mut c2 = CouncilClient::connect(url).await.unwrap();
 
-    let (sid, t1) = join(&mut c1, "Alice").await;
-    let (_, t2) = join(&mut c2, "Bob").await;
+    // Create session with 1s turn timeout
+    let resp = c1
+        .create_session(CreateSessionRequest {
+            question: "Timeout test?".to_string(),
+            rounds: 1,
+            min_participants: 2,
+            join_timeout_seconds: 30,
+            turn_timeout_seconds: 1,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let sid = resp.session_id;
+
+    let (_, t1) = join(&mut c1, "Alice", &sid).await;
+    let (_, t2) = join(&mut c2, "Bob", &sid).await;
 
     // Alice's turn but she doesn't respond - wait for turn timeout to skip her
     let w = wait_for_status(&mut c1, &sid, "Alice", &t1, 5).await;
@@ -572,10 +598,17 @@ async fn test_turn_timeout_skips_participant() {
 
 #[tokio::test]
 async fn test_name_too_long_rejected() {
-    let (_url, mut c1) = start_daemon("Test?", 1, 3, 30).await;
+    let (_url, mut c1) = start_daemon().await;
+
+    let sid = create_session(&mut c1, "Test?", 1, 3, 30).await;
 
     let long_name = "A".repeat(101);
-    let result = c1.join(JoinRequest { name: long_name }).await;
+    let result = c1
+        .join(JoinRequest {
+            name: long_name,
+            session_id: sid.clone(),
+        })
+        .await;
 
     assert!(result.is_err());
     assert_eq!(result.unwrap_err().code(), tonic::Code::InvalidArgument);
@@ -585,11 +618,13 @@ async fn test_name_too_long_rejected() {
 
 #[tokio::test]
 async fn test_respond_position_too_long_rejected() {
-    let (url, mut c1) = start_daemon("Test?", 1, 2, 30).await;
+    let (url, mut c1) = start_daemon().await;
     let mut c2 = CouncilClient::connect(url).await.unwrap();
 
-    let (sid, t1) = join(&mut c1, "Alice").await;
-    join(&mut c2, "Bob").await;
+    let sid = create_session(&mut c1, "Test?", 1, 2, 30).await;
+
+    let (_, t1) = join(&mut c1, "Alice", &sid).await;
+    join(&mut c2, "Bob", &sid).await;
 
     // Alice's turn - submit position > 300 chars
     let w = wait_for_status(&mut c1, &sid, "Alice", &t1, 5).await;
@@ -615,11 +650,13 @@ async fn test_respond_position_too_long_rejected() {
 
 #[tokio::test]
 async fn test_respond_too_many_reasoning_rejected() {
-    let (url, mut c1) = start_daemon("Test?", 1, 2, 30).await;
+    let (url, mut c1) = start_daemon().await;
     let mut c2 = CouncilClient::connect(url).await.unwrap();
 
-    let (sid, t1) = join(&mut c1, "Alice").await;
-    join(&mut c2, "Bob").await;
+    let sid = create_session(&mut c1, "Test?", 1, 2, 30).await;
+
+    let (_, t1) = join(&mut c1, "Alice", &sid).await;
+    join(&mut c2, "Bob", &sid).await;
 
     let w = wait_for_status(&mut c1, &sid, "Alice", &t1, 5).await;
     assert_eq!(w.status, WaitStatus::YourTurn as i32);
@@ -650,11 +687,13 @@ async fn test_respond_too_many_reasoning_rejected() {
 
 #[tokio::test]
 async fn test_wrong_session_id_rejected() {
-    let (url, mut c1) = start_daemon("Test?", 1, 2, 30).await;
+    let (url, mut c1) = start_daemon().await;
     let mut c2 = CouncilClient::connect(url).await.unwrap();
 
-    let (sid, t1) = join(&mut c1, "Alice").await;
-    join(&mut c2, "Bob").await;
+    let sid = create_session(&mut c1, "Test?", 1, 2, 30).await;
+
+    let (_, t1) = join(&mut c1, "Alice", &sid).await;
+    join(&mut c2, "Bob", &sid).await;
 
     // Try wait with wrong session ID
     let result = c1
@@ -672,4 +711,275 @@ async fn test_wrong_session_id_rejected() {
     // Verify correct session ID still works
     let w = wait_for_status(&mut c1, &sid, "Alice", &t1, 1).await;
     assert_eq!(w.status, WaitStatus::YourTurn as i32);
+}
+
+// ── Multi-session isolation ──
+
+#[tokio::test]
+async fn test_multi_session_isolation() {
+    let (url, mut c1) = start_daemon().await;
+    let mut c2 = CouncilClient::connect(url.clone()).await.unwrap();
+    let mut c3 = CouncilClient::connect(url.clone()).await.unwrap();
+    let mut c4 = CouncilClient::connect(url).await.unwrap();
+
+    // Create two independent sessions
+    let sid1 = create_session(&mut c1, "Session 1 question?", 1, 2, 30).await;
+    let sid2 = create_session(&mut c1, "Session 2 question?", 1, 2, 30).await;
+
+    // Join different sessions
+    let (_, t1) = join(&mut c1, "Alice", &sid1).await;
+    let (_, t2) = join(&mut c2, "Bob", &sid1).await;
+    let (_, t3) = join(&mut c3, "Carol", &sid2).await;
+    let (_, t4) = join(&mut c4, "Dave", &sid2).await;
+
+    // Session 1: Alice responds
+    let w = wait_for_status(&mut c1, &sid1, "Alice", &t1, 5).await;
+    assert_eq!(w.status, WaitStatus::YourTurn as i32);
+    assert_eq!(w.question, "Session 1 question?");
+    respond(&mut c1, &sid1, "Alice", &t1, "Session 1 pos").await;
+
+    // Session 2: Carol responds (independent)
+    let w = wait_for_status(&mut c3, &sid2, "Carol", &t3, 5).await;
+    assert_eq!(w.status, WaitStatus::YourTurn as i32);
+    assert_eq!(w.question, "Session 2 question?");
+    respond(&mut c3, &sid2, "Carol", &t3, "Session 2 pos").await;
+
+    // Cross-session: Alice's token doesn't work in session 2
+    let result = c1
+        .wait(WaitRequest {
+            session_id: sid2.clone(),
+            name: "Alice".to_string(),
+            timeout_seconds: 1,
+            participant_token: t1.clone(),
+        })
+        .await;
+    assert!(result.is_err());
+
+    // Continue session 1 to completion
+    let w = wait_for_status(&mut c2, &sid1, "Bob", &t2, 5).await;
+    assert_eq!(w.status, WaitStatus::YourTurn as i32);
+    respond(&mut c2, &sid1, "Bob", &t2, "Bob pos").await;
+
+    let w = wait_for_status(&mut c1, &sid1, "Alice", &t1, 5).await;
+    assert_eq!(w.status, WaitStatus::VotePhase as i32);
+    vote(&mut c1, &sid1, "Alice", &t1, VoteChoice::Yay, "yes").await;
+    vote(&mut c2, &sid1, "Bob", &t2, VoteChoice::Yay, "yes").await;
+
+    let w = wait_for_status(&mut c1, &sid1, "Alice", &t1, 5).await;
+    assert_eq!(w.status, WaitStatus::Complete as i32);
+
+    // Session 2 should still be in progress
+    let w = wait_for_status(&mut c4, &sid2, "Dave", &t4, 5).await;
+    assert_eq!(w.status, WaitStatus::YourTurn as i32);
+}
+
+// ── GetSession status ──
+
+#[tokio::test]
+async fn test_get_session_status() {
+    let (url, mut c1) = start_daemon().await;
+    let mut c2 = CouncilClient::connect(url).await.unwrap();
+
+    let sid = create_session(&mut c1, "Status test?", 1, 2, 30).await;
+
+    // Before any joins
+    let resp = c1
+        .get_session(GetSessionRequest {
+            session_id: sid.clone(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(resp.status, council_proto::SessionStatus::LobbyOpen as i32);
+    assert!(resp.participants.is_empty());
+
+    // After joins (starts discussion)
+    join(&mut c1, "Alice", &sid).await;
+    join(&mut c2, "Bob", &sid).await;
+
+    let resp = c1
+        .get_session(GetSessionRequest {
+            session_id: sid.clone(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(resp.status, council_proto::SessionStatus::InProgress as i32);
+    assert_eq!(resp.participants.len(), 2);
+    assert_eq!(resp.current_round, 1);
+    assert_eq!(resp.total_rounds, 1);
+}
+
+// ── ListSessions ──
+
+#[tokio::test]
+async fn test_list_sessions() {
+    let (_url, mut c1) = start_daemon().await;
+
+    // No sessions initially
+    let resp = c1
+        .list_sessions(ListSessionsRequest {})
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(resp.sessions.is_empty());
+
+    // Create two sessions
+    let sid1 = create_session(&mut c1, "Question 1?", 1, 2, 30).await;
+    let sid2 = create_session(&mut c1, "Question 2?", 2, 3, 60).await;
+
+    let resp = c1
+        .list_sessions(ListSessionsRequest {})
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(resp.sessions.len(), 2);
+
+    let ids: Vec<&str> = resp.sessions.iter().map(|s| s.session_id.as_str()).collect();
+    assert!(ids.contains(&sid1.as_str()));
+    assert!(ids.contains(&sid2.as_str()));
+
+    for s in &resp.sessions {
+        assert_eq!(s.status, council_proto::SessionStatus::LobbyOpen as i32);
+        assert_eq!(s.participant_count, 0);
+    }
+}
+
+// ── CreateSession validation ──
+
+#[tokio::test]
+async fn test_create_session_validation() {
+    let (_url, mut c1) = start_daemon().await;
+
+    // Empty question
+    let result = c1
+        .create_session(CreateSessionRequest {
+            question: "".to_string(),
+            rounds: 1,
+            min_participants: 2,
+            join_timeout_seconds: 30,
+            turn_timeout_seconds: 120,
+        })
+        .await;
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().code(), tonic::Code::InvalidArgument);
+
+    // Rounds too high
+    let result = c1
+        .create_session(CreateSessionRequest {
+            question: "Valid question?".to_string(),
+            rounds: 11,
+            min_participants: 2,
+            join_timeout_seconds: 30,
+            turn_timeout_seconds: 120,
+        })
+        .await;
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().code(), tonic::Code::InvalidArgument);
+}
+
+// ── CreateSession defaults ──
+
+#[tokio::test]
+async fn test_create_session_defaults() {
+    let (url, mut c1) = start_daemon().await;
+    let mut c2 = CouncilClient::connect(url.clone()).await.unwrap();
+    let mut c3 = CouncilClient::connect(url.clone()).await.unwrap();
+
+    // rounds=0 should default to 2
+    let resp = c1
+        .create_session(CreateSessionRequest {
+            question: "Defaults test?".to_string(),
+            rounds: 0,
+            min_participants: 2,
+            join_timeout_seconds: 30,
+            turn_timeout_seconds: 120,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let sid = resp.session_id;
+
+    let (_, t1) = join(&mut c1, "Alice", &sid).await;
+    let (_, t2) = join(&mut c2, "Bob", &sid).await;
+
+    // Should have 2 rounds — verify via GetSession
+    let info = c1
+        .get_session(GetSessionRequest {
+            session_id: sid.clone(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(info.total_rounds, 2);
+
+    // Complete round 1
+    let w = wait_for_status(&mut c1, &sid, "Alice", &t1, 5).await;
+    assert_eq!(w.status, WaitStatus::YourTurn as i32);
+    respond(&mut c1, &sid, "Alice", &t1, "Pos A r1").await;
+    let w = wait_for_status(&mut c2, &sid, "Bob", &t2, 5).await;
+    assert_eq!(w.status, WaitStatus::YourTurn as i32);
+    respond(&mut c2, &sid, "Bob", &t2, "Pos B r1").await;
+
+    // Should still be in progress (round 2), not vote phase
+    let w = wait_for_status(&mut c1, &sid, "Alice", &t1, 5).await;
+    assert_eq!(w.status, WaitStatus::YourTurn as i32);
+    assert_eq!(w.current_round, 2);
+
+    // min_participants=0 should default to 3
+    let resp = c1
+        .create_session(CreateSessionRequest {
+            question: "Min participants default?".to_string(),
+            rounds: 1,
+            min_participants: 0,
+            join_timeout_seconds: 30,
+            turn_timeout_seconds: 120,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let sid2 = resp.session_id;
+
+    // Join 2 — should NOT auto-start (needs 3)
+    join(&mut c1, "X", &sid2).await;
+    let (_, t_y) = join(&mut c2, "Y", &sid2).await;
+    let w = wait_for_status(&mut c2, &sid2, "Y", &t_y, 1).await;
+    assert_eq!(w.status, WaitStatus::Lobby as i32);
+
+    // Join a third — should auto-start
+    join(&mut c3, "Z", &sid2).await;
+    let w = wait_for_status(&mut c2, &sid2, "Y", &t_y, 5).await;
+    assert!(
+        w.status == WaitStatus::YourTurn as i32 || w.status == WaitStatus::Waiting as i32,
+        "Expected discussion to start, got status: {}",
+        w.status
+    );
+}
+
+// ── Join with empty session_id rejected ──
+
+#[tokio::test]
+async fn test_join_empty_session_id_rejected() {
+    let (_url, mut c1) = start_daemon().await;
+
+    let result = c1
+        .join(JoinRequest {
+            name: "Alice".to_string(),
+            session_id: "".to_string(),
+        })
+        .await;
+
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().code(), tonic::Code::InvalidArgument);
+
+    // Whitespace-only should also fail
+    let result = c1
+        .join(JoinRequest {
+            name: "Alice".to_string(),
+            session_id: "   ".to_string(),
+        })
+        .await;
+
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().code(), tonic::Code::InvalidArgument);
 }

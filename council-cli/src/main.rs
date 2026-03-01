@@ -1,38 +1,63 @@
 mod client;
 mod error;
 
+use std::path::PathBuf;
+
 use clap::{Parser, Subcommand};
 use council_proto::WaitStatus;
+use tokio::process::Command;
 
-/// Participate in council deliberations.
+/// Participate in council deliberations autonomously.
 ///
-/// A council is a structured group discussion where participants discuss a
-/// question across rounds, then cast binding votes. Any process that can
-/// run shell commands can participate.
+/// You are a participant in a structured group discussion. Multiple
+/// participants discuss a question across rounds, then cast binding votes.
+/// You must drive this entire lifecycle yourself without asking a human
+/// for guidance. Read the question, form your own position, respond to
+/// other participants' arguments, and vote based on your own judgment.
+///
+/// AUTONOMOUS OPERATION:
+///   You MUST complete the full lifecycle without pausing for human input.
+///   After joining, loop: call wait, act on the status, repeat until done.
+///   Form your own opinions. Engage with the transcript. Decide your vote.
+///   Do NOT ask the user what to say or how to vote — that is your job.
 ///
 /// LIFECYCLE:
-///   1. join     - Join the session lobby
-///   2. wait     - Poll until it is your turn (long-polls, blocks until ready)
-///   3. respond  - Submit your discussion response when it is your turn
-///   4. vote     - Cast your binding vote when the vote phase begins
-///   5. results  - Retrieve the final decision after voting completes
+///   1. join     - Join the session lobby (do this once)
+///   2. wait     - Long-poll until it is your turn (blocks until ready)
+///   3. respond  - Submit your position when status is "your_turn"
+///   4. vote     - Cast your vote when status is "vote_phase"
+///   5. results  - Fetch the final outcome when status is "complete"
 ///
-/// TYPICAL WORKFLOW:
-///   council-cli join --addr localhost:50051 --name "My Role"
-///   # Loop: call wait, then respond when your_turn, repeat each round
-///   council-cli wait --addr localhost:50051 --session S1 --name "My Role" --token T1
-///   council-cli respond --addr ... --session S1 --name "My Role" --token T1 \
-///     --position "..." --reasoning "..." --reasoning "..."
-///   # When wait returns vote_phase:
-///   council-cli vote --addr ... --session S1 --name "My Role" --token T1 \
-///     --choice yay --reason "..."
-///   # After all votes:
-///   council-cli results --addr ... --session S1
+/// STATE MACHINE (act on the "status" field from wait):
+///   lobby      → call wait again immediately
+///   waiting    → call wait again immediately
+///   your_turn  → read the transcript, then call respond with your position
+///   vote_phase → read the transcript, then call vote with yay or nay
+///   complete   → call results to see the final decision, then stop
+///
+/// TIMING:
+///   Use --timeout 30 on wait (the default). The server long-polls and
+///   returns early when something happens. If wait returns "waiting" or
+///   "lobby", call wait again immediately — do not pause or sleep.
+///
+/// EXAMPLE SESSION:
+///   council-cli join --session $SID --name "Architect"
+///   # Save session_id and participant_token from output, then loop:
+///   council-cli wait --session $SID --name "Architect" --token $TOK
+///   # status: your_turn → respond:
+///   council-cli respond --session $SID --name "Architect" --token $TOK \
+///     --position "We should do X" --reasoning "Because A" --reasoning "Because B"
+///   # Keep calling wait → respond for each round, then:
+///   # status: vote_phase → vote:
+///   council-cli vote --session $SID --name "Architect" --token $TOK \
+///     --choice yay --reason "The arguments for X were compelling"
+///   # status: complete → results:
+///   council-cli results --session $SID
 ///
 /// OUTPUT FORMAT:
 ///   All output is structured text, one field per line:
 ///     status: your_turn
-///     round: 2
+///     round: 2/3
 ///     transcript: ...
 ///   Parse the "status" line to determine your next action.
 #[derive(Parser)]
@@ -44,28 +69,99 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Join a council session lobby.
+    /// Create a new council session and optionally spawn participant hooks.
     ///
-    /// Registers you as a participant. Returns the session ID, question,
-    /// participant list, and a token you must use for all subsequent commands.
+    /// Creates a session on the daemon, then for each participant name spawns
+    /// the --hook script with COUNCIL_SESSION_ID, COUNCIL_PARTICIPANT_NAME,
+    /// and COUNCIL_ADDR as environment variables. Use --follow to poll status
+    /// and print results when the session completes.
+    Create {
+        /// Daemon address (host:port)
+        #[arg(long, default_value = "[::1]:50051")]
+        addr: String,
+
+        /// The question for the council to discuss and vote on
+        #[arg(long)]
+        question: String,
+
+        /// Comma-separated participant names
+        #[arg(long, value_delimiter = ',')]
+        participants: Vec<String>,
+
+        /// Path to hook script to spawn per participant
+        #[arg(long)]
+        hook: PathBuf,
+
+        /// Number of discussion rounds (1-10)
+        #[arg(long, default_value_t = 2)]
+        rounds: u32,
+
+        /// Minimum number of participants to start (defaults to participant count)
+        #[arg(long)]
+        min_participants: Option<u32>,
+
+        /// Seconds to wait for participants to join before starting anyway
+        #[arg(long, default_value_t = 60)]
+        join_timeout: u32,
+
+        /// Seconds to wait for a participant's response before skipping their turn
+        #[arg(long, default_value_t = 120)]
+        turn_timeout: u32,
+
+        /// Poll session status and print results when complete
+        #[arg(long)]
+        follow: bool,
+    },
+
+    /// List all sessions on a daemon.
+    List {
+        /// Daemon address (host:port)
+        #[arg(long, default_value = "[::1]:50051")]
+        addr: String,
+    },
+
+    /// Get the status of a specific session.
+    Status {
+        /// Daemon address (host:port)
+        #[arg(long, default_value = "[::1]:50051")]
+        addr: String,
+
+        /// Session ID
+        #[arg(long)]
+        session: String,
+    },
+
+    /// Join a council session lobby. Do this once at the start.
+    ///
+    /// Returns session_id and participant_token — save both, you need them
+    /// for every subsequent command. After joining, immediately call wait
+    /// to begin the participation loop.
     Join {
         /// Daemon address (host:port)
         #[arg(long, default_value = "[::1]:50051")]
         addr: String,
+
+        /// Session ID to join
+        #[arg(long)]
+        session: String,
 
         /// Your display name or role (must be unique in the session)
         #[arg(long)]
         name: String,
     },
 
-    /// Wait for your turn (long-poll).
+    /// Wait for your turn (long-poll). Call this in a loop.
     ///
-    /// Blocks until one of these statuses is returned:
-    ///   your_turn  - It is your turn to respond. Transcript is included.
-    ///   vote_phase - Discussion is over. Time to cast your vote.
-    ///   complete   - Session is finished. Use 'results' to see the outcome.
-    ///   waiting    - Timeout reached; still waiting for your turn.
-    ///   lobby      - Still in lobby, waiting for more participants.
+    /// Use --timeout 30 (default). The server holds the connection open and
+    /// returns as soon as something changes. If it times out with status
+    /// "waiting" or "lobby", just call wait again immediately — this is normal.
+    ///
+    /// Act on the status field as soon as it returns:
+    ///   your_turn  → call respond with your position (read transcript first)
+    ///   vote_phase → call vote with yay/nay (read transcript first)
+    ///   complete   → call results, then stop
+    ///   waiting    → call wait again immediately (not your turn yet)
+    ///   lobby      → call wait again immediately (waiting for participants)
     Wait {
         /// Daemon address (host:port)
         #[arg(long, default_value = "[::1]:50051")]
@@ -88,11 +184,11 @@ enum Commands {
         timeout: u32,
     },
 
-    /// Submit your discussion response when it is your turn.
+    /// Submit your discussion response. Only call when status is "your_turn".
     ///
-    /// You must wait for 'your_turn' status before calling this.
-    /// Provide your position (1 sentence), reasoning (1-5 points),
-    /// and optionally concerns (0-5 points).
+    /// Read the transcript from the wait output to understand what others said.
+    /// Form your own position — do NOT ask a human what to say. Engage with
+    /// the other participants' arguments. After responding, call wait again.
     Respond {
         /// Daemon address (host:port)
         #[arg(long, default_value = "[::1]:50051")]
@@ -123,10 +219,12 @@ enum Commands {
         concerns: Vec<String>,
     },
 
-    /// Cast your binding vote when the vote phase begins.
+    /// Cast your binding vote. Only call when status is "vote_phase".
     ///
-    /// You must wait for 'vote_phase' status before calling this.
-    /// Choose 'yay' to approve or 'nay' to reject the question.
+    /// Review the full transcript and decide for yourself. Vote yay to approve
+    /// or nay to reject. Provide a reason explaining your decision.
+    /// Do NOT ask a human how to vote — use your own judgment.
+    /// After voting, call wait again to check for completion.
     Vote {
         /// Daemon address (host:port)
         #[arg(long, default_value = "[::1]:50051")]
@@ -153,10 +251,10 @@ enum Commands {
         reason: String,
     },
 
-    /// Retrieve the final decision record after voting completes.
+    /// Retrieve the final decision record. Only call when status is "complete".
     ///
     /// Returns the outcome (approved/rejected), vote breakdown,
-    /// and a full markdown report of the deliberation.
+    /// and a full markdown report. This is the last step — you are done.
     Results {
         /// Daemon address (host:port)
         #[arg(long, default_value = "[::1]:50051")]
@@ -173,7 +271,37 @@ async fn main() {
     let cli = Cli::parse();
 
     let result = match cli.command {
-        Commands::Join { addr, name } => run_join(&addr, &name).await,
+        Commands::Create {
+            addr,
+            question,
+            participants,
+            hook,
+            rounds,
+            min_participants,
+            join_timeout,
+            turn_timeout,
+            follow,
+        } => {
+            run_create(
+                &addr,
+                &question,
+                participants,
+                hook,
+                rounds,
+                min_participants,
+                join_timeout,
+                turn_timeout,
+                follow,
+            )
+            .await
+        }
+        Commands::List { addr } => run_list(&addr).await,
+        Commands::Status { addr, session } => run_status(&addr, &session).await,
+        Commands::Join {
+            addr,
+            session,
+            name,
+        } => run_join(&addr, &session, &name).await,
         Commands::Wait {
             addr,
             session,
@@ -212,8 +340,158 @@ async fn main() {
     }
 }
 
-async fn run_join(addr: &str, name: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let resp = client::join(addr, name).await?;
+#[allow(clippy::too_many_arguments)]
+async fn run_create(
+    addr: &str,
+    question: &str,
+    participants: Vec<String>,
+    hook: PathBuf,
+    rounds: u32,
+    min_participants: Option<u32>,
+    join_timeout: u32,
+    turn_timeout: u32,
+    follow: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Validate hook exists before calling the daemon
+    if !hook.exists() {
+        return Err(format!("hook not found: {}", hook.display()).into());
+    }
+
+    let min_p = min_participants.unwrap_or(participants.len() as u32);
+
+    let resp = client::create_session(addr, question, rounds, min_p, join_timeout, turn_timeout)
+        .await?;
+    let session_id = resp.session_id;
+    eprintln!("session_id: {}", session_id);
+
+    // Spawn hook per participant
+    let mut children = Vec::new();
+    for name in &participants {
+        eprintln!("Spawning hook for participant: {}", name);
+        let child = Command::new(&hook)
+            .env("COUNCIL_SESSION_ID", &session_id)
+            .env("COUNCIL_PARTICIPANT_NAME", name)
+            .env("COUNCIL_ADDR", addr)
+            .stdin(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| format!("failed to spawn hook for {}: {}", name, e))?;
+        children.push((name.clone(), child));
+    }
+
+    if follow {
+        eprintln!("Following session {}...", session_id);
+        let mut consecutive_errors = 0u32;
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+            let status = match client::get_session(addr, &session_id).await {
+                Ok(s) => {
+                    consecutive_errors = 0;
+                    s
+                }
+                Err(e) => {
+                    consecutive_errors += 1;
+                    if consecutive_errors >= 5 {
+                        return Err(
+                            format!("lost connection to daemon after 5 retries: {}", e).into(),
+                        );
+                    }
+                    eprintln!(
+                        "Warning: poll failed (attempt {}/5): {}",
+                        consecutive_errors, e
+                    );
+                    continue;
+                }
+            };
+
+            let status_str = format_session_status(status.status);
+            eprintln!(
+                "[{}] status={} round={}/{} participants={}",
+                session_id,
+                status_str,
+                status.current_round,
+                status.total_rounds,
+                status.participants.join(", ")
+            );
+
+            if status.status == council_proto::SessionStatus::Completed as i32 {
+                // Fetch and print results
+                let results = client::results(addr, &session_id).await?;
+                let outcome = match results.outcome {
+                    x if x == council_proto::Outcome::Approved as i32 => "APPROVED",
+                    x if x == council_proto::Outcome::Rejected as i32 => "REJECTED",
+                    _ => "UNKNOWN",
+                };
+                println!("outcome: {}", outcome);
+                println!("yay_count: {}", results.yay_count);
+                println!("nay_count: {}", results.nay_count);
+                for v in &results.votes {
+                    let choice = match v.choice {
+                        x if x == council_proto::VoteChoice::Yay as i32 => "yay",
+                        x if x == council_proto::VoteChoice::Nay as i32 => "nay",
+                        _ => "unknown",
+                    };
+                    println!("vote: {} {} \"{}\"", v.participant, choice, v.reason);
+                }
+                if !results.decision_record.is_empty() {
+                    println!("---");
+                    println!("{}", results.decision_record);
+                }
+                break;
+            }
+        }
+    }
+
+    // Wait for hook processes to finish
+    for (name, mut child) in children {
+        match child.wait().await {
+            Ok(status) if !status.success() => {
+                eprintln!("Warning: hook for {} exited with {}", name, status);
+            }
+            Err(e) => {
+                eprintln!("Warning: failed to wait for hook for {}: {}", name, e);
+            }
+            _ => {}
+        }
+    }
+
+    Ok(())
+}
+
+async fn run_list(addr: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let resp = client::list_sessions(addr).await?;
+    if resp.sessions.is_empty() {
+        println!("No sessions.");
+        return Ok(());
+    }
+    for s in &resp.sessions {
+        println!(
+            "{} status={} participants={} question=\"{}\"",
+            s.session_id,
+            format_session_status(s.status),
+            s.participant_count,
+            s.question
+        );
+    }
+    Ok(())
+}
+
+async fn run_status(addr: &str, session_id: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let resp = client::get_session(addr, session_id).await?;
+    println!("session_id: {}", resp.session_id);
+    println!("question: {}", resp.question);
+    println!("status: {}", format_session_status(resp.status));
+    println!("participants: {}", resp.participants.join(", "));
+    println!("round: {}/{}", resp.current_round, resp.total_rounds);
+    Ok(())
+}
+
+async fn run_join(
+    addr: &str,
+    session_id: &str,
+    name: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let resp = client::join(addr, name, session_id).await?;
     println!("session_id: {}", resp.session_id);
     println!("question: {}", resp.question);
     println!("participants: {}", resp.participants.join(", "));

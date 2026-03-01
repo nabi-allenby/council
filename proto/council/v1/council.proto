@@ -3,6 +3,15 @@ syntax = "proto3";
 package council.v1;
 
 service Council {
+  // Create a new session with a question and configuration.
+  rpc CreateSession(CreateSessionRequest) returns (CreateSessionResponse);
+
+  // Get the current status of a session (read-only, no auth).
+  rpc GetSession(GetSessionRequest) returns (GetSessionResponse);
+
+  // List all sessions on this daemon.
+  rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
+
   // Join the session lobby. Returns session info and participant list.
   rpc Join(JoinRequest) returns (JoinResponse);
 
@@ -19,10 +28,55 @@ service Council {
   rpc Results(ResultsRequest) returns (ResultsResponse);
 }
 
+// -- CreateSession --
+
+message CreateSessionRequest {
+  string question = 1;
+  uint32 rounds = 2;
+  uint32 min_participants = 3;
+  uint32 join_timeout_seconds = 4;
+  uint32 turn_timeout_seconds = 5;
+}
+
+message CreateSessionResponse {
+  string session_id = 1;
+}
+
+// -- GetSession --
+
+message GetSessionRequest {
+  string session_id = 1;
+}
+
+message GetSessionResponse {
+  string session_id = 1;
+  string question = 2;
+  SessionStatus status = 3;
+  repeated string participants = 4;
+  uint32 current_round = 5;
+  uint32 total_rounds = 6;
+}
+
+// -- ListSessions --
+
+message ListSessionsRequest {}
+
+message ListSessionsResponse {
+  repeated SessionSummary sessions = 1;
+}
+
+message SessionSummary {
+  string session_id = 1;
+  string question = 2;
+  SessionStatus status = 3;
+  uint32 participant_count = 4;
+}
+
 // -- Join --
 
 message JoinRequest {
-  string name = 1;  // Participant display name / role
+  string name = 1;      // Participant display name / role
+  string session_id = 2; // Session to join
 }
 
 message JoinResponse {

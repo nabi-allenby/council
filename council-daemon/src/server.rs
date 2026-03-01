@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -7,127 +8,120 @@ use tonic::{Request, Response, Status};
 
 use council_proto::council_server::Council;
 use council_proto::{
-    JoinRequest, JoinResponse, RespondRequest, RespondResponse, ResultsRequest, ResultsResponse,
-    VoteRecord, VoteRequest, VoteResponse, WaitRequest, WaitResponse, WaitStatus,
+    CreateSessionRequest, CreateSessionResponse, GetSessionRequest, GetSessionResponse,
+    JoinRequest, JoinResponse, ListSessionsRequest, ListSessionsResponse, RespondRequest,
+    RespondResponse, ResultsRequest, ResultsResponse, SessionSummary, VoteRecord, VoteRequest,
+    VoteResponse, WaitRequest, WaitResponse, WaitStatus,
 };
 
-use crate::config::DaemonConfig;
+use crate::config::SessionConfig;
 use crate::types::{Participant, Session, SessionStatus, Turn, Vote, VoteChoice};
 
-struct SharedState {
+struct SessionState {
     session: RwLock<Session>,
     version_tx: watch::Sender<u64>,
+    config: SessionConfig,
+}
+
+// TODO: Completed sessions are never evicted — a long-running daemon will
+// accumulate session state (transcripts, votes) indefinitely. Add a TTL-based
+// eviction strategy for completed sessions.
+struct SessionStore {
+    sessions: RwLock<HashMap<String, Arc<SessionState>>>,
+}
+
+impl SessionStore {
+    fn new() -> Self {
+        SessionStore {
+            sessions: RwLock::new(HashMap::new()),
+        }
+    }
+
+    async fn get(&self, session_id: &str) -> Result<Arc<SessionState>, Status> {
+        let sessions = self.sessions.read().await;
+        sessions
+            .get(session_id)
+            .cloned()
+            .ok_or_else(|| Status::not_found("unknown session"))
+    }
+
+    async fn insert(&self, session_id: String, state: Arc<SessionState>) {
+        let mut sessions = self.sessions.write().await;
+        sessions.insert(session_id, state);
+    }
+
+    async fn list(&self) -> Vec<(String, Arc<SessionState>)> {
+        let sessions = self.sessions.read().await;
+        sessions
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+    }
 }
 
 pub struct CouncilService {
-    shared: Arc<SharedState>,
-    config: DaemonConfig,
+    store: Arc<SessionStore>,
+}
+
+impl Default for CouncilService {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl CouncilService {
-    pub fn new(question: String, config: DaemonConfig) -> Self {
-        let session_id = uuid::Uuid::new_v4().to_string();
-        let session = Session::new(session_id, question, config.rounds);
-        let (version_tx, _) = watch::channel(0u64);
-
+    pub fn new() -> Self {
         CouncilService {
-            shared: Arc::new(SharedState {
-                session: RwLock::new(session),
-                version_tx,
-            }),
-            config,
-        }
-    }
-
-    fn notify_state_change(&self) {
-        self.shared.version_tx.send_modify(|v| *v += 1);
-    }
-
-    #[allow(clippy::result_large_err)]
-    fn validate_session_id(session: &Session, session_id: &str) -> Result<(), Status> {
-        if session_id != session.id {
-            return Err(Status::not_found("unknown session"));
-        }
-        Ok(())
-    }
-
-    #[allow(clippy::result_large_err)]
-    fn validate_token(session: &Session, name: &str, token: &str) -> Result<(), Status> {
-        match session.participants.iter().find(|p| p.name == name) {
-            Some(p) if p.token == token => Ok(()),
-            Some(_) => Err(Status::permission_denied("invalid participant token")),
-            None => Err(Status::not_found("participant not found")),
-        }
-    }
-
-    pub fn spawn_lobby_timeout(&self) {
-        let shared = self.shared.clone();
-        let timeout = self.config.join_timeout;
-        let turn_timeout = self.config.turn_timeout;
-
-        tokio::spawn(async move {
-            tokio::time::sleep(timeout).await;
-            let mut session = shared.session.write().await;
-            if session.status != SessionStatus::LobbyOpen {
-                // Session already started (min_participants reached before timeout).
-            } else if session.participants.is_empty() {
-                eprintln!("Lobby timeout reached with no participants. Waiting for joins.");
-            } else {
-                eprintln!(
-                    "Lobby timeout reached. Starting with {} participant(s).",
-                    session.participants.len()
-                );
-                session.start_discussion();
-                let round = session.current_round;
-                let idx = session.current_speaker_idx;
-                shared.version_tx.send_modify(|v| *v += 1);
-                drop(session);
-                spawn_turn_timeout(shared, turn_timeout, round, idx);
-            }
-        });
-    }
-
-    async fn wait_for_actionable(
-        &self,
-        req: &WaitRequest,
-    ) -> Result<Response<WaitResponse>, Status> {
-        // Validate once upfront — session_id and token don't change mid-session.
-        {
-            let session = self.shared.session.read().await;
-            Self::validate_session_id(&session, &req.session_id)?;
-            Self::validate_token(&session, &req.name, &req.participant_token)?;
-        }
-
-        let mut rx = self.shared.version_tx.subscribe();
-        loop {
-            {
-                let session = self.shared.session.read().await;
-                let response = build_wait_response(&session, &req.name);
-                let status = response.status;
-                if status == WaitStatus::YourTurn as i32
-                    || status == WaitStatus::VotePhase as i32
-                    || status == WaitStatus::Complete as i32
-                {
-                    return Ok(Response::new(response));
-                }
-            }
-            if rx.changed().await.is_err() {
-                return Err(Status::internal("session closed"));
-            }
+            store: Arc::new(SessionStore::new()),
         }
     }
 }
 
+#[allow(clippy::result_large_err)]
+fn validate_token(session: &Session, name: &str, token: &str) -> Result<(), Status> {
+    match session.participants.iter().find(|p| p.name == name) {
+        Some(p) if p.token == token => Ok(()),
+        Some(_) => Err(Status::permission_denied("invalid participant token")),
+        None => Err(Status::not_found("participant not found")),
+    }
+}
+
+fn spawn_lobby_timeout(state: Arc<SessionState>) {
+    let timeout = state.config.join_timeout;
+    let turn_timeout = state.config.turn_timeout;
+
+    tokio::spawn(async move {
+        tokio::time::sleep(timeout).await;
+        let mut session = state.session.write().await;
+        if session.status != SessionStatus::LobbyOpen {
+            // Session already started (min_participants reached before timeout).
+        } else if session.participants.is_empty() {
+            eprintln!("Lobby timeout reached with no participants. Waiting for joins.");
+        } else {
+            eprintln!(
+                "Lobby timeout reached. Starting with {} participant(s).",
+                session.participants.len()
+            );
+            session.start_discussion();
+            let round = session.current_round;
+            let idx = session.current_speaker_idx;
+            state.version_tx.send_modify(|v| *v += 1);
+            drop(session);
+            spawn_turn_timeout(state, turn_timeout, round, idx);
+        }
+    });
+}
+
 fn spawn_turn_timeout(
-    shared: Arc<SharedState>,
+    state: Arc<SessionState>,
     timeout: Duration,
     expected_round: u32,
     expected_idx: usize,
 ) {
-    let shared2 = shared.clone();
+    let state2 = state.clone();
     tokio::spawn(async move {
         tokio::time::sleep(timeout).await;
-        let mut session = shared2.session.write().await;
+        let mut session = state2.session.write().await;
         if session.status == SessionStatus::InProgress
             && session.current_round == expected_round
             && session.current_speaker_idx == expected_idx
@@ -138,17 +132,144 @@ fn spawn_turn_timeout(
             let round = session.current_round;
             let idx = session.current_speaker_idx;
             let still_in_progress = session.status == SessionStatus::InProgress;
-            shared2.version_tx.send_modify(|v| *v += 1);
+            state2.version_tx.send_modify(|v| *v += 1);
             drop(session);
             if still_in_progress {
-                spawn_turn_timeout(shared, timeout, round, idx);
+                spawn_turn_timeout(state, timeout, round, idx);
             }
         }
     });
 }
 
+async fn wait_for_actionable(
+    state: &Arc<SessionState>,
+    req: &WaitRequest,
+) -> Result<Response<WaitResponse>, Status> {
+    // Validate once upfront — session_id and token don't change mid-session.
+    {
+        let session = state.session.read().await;
+        validate_token(&session, &req.name, &req.participant_token)?;
+    }
+
+    let mut rx = state.version_tx.subscribe();
+    loop {
+        {
+            let session = state.session.read().await;
+            let response = build_wait_response(&session, &req.name);
+            let status = response.status;
+            if status == WaitStatus::YourTurn as i32
+                || status == WaitStatus::VotePhase as i32
+                || status == WaitStatus::Complete as i32
+            {
+                return Ok(Response::new(response));
+            }
+        }
+        if rx.changed().await.is_err() {
+            return Err(Status::internal("session closed"));
+        }
+    }
+}
+
 #[tonic::async_trait]
 impl Council for CouncilService {
+    async fn create_session(
+        &self,
+        request: Request<CreateSessionRequest>,
+    ) -> Result<Response<CreateSessionResponse>, Status> {
+        let req = request.into_inner();
+
+        if req.question.trim().is_empty() {
+            return Err(Status::invalid_argument("question is required"));
+        }
+        if req.question.len() > 1000 {
+            return Err(Status::invalid_argument(
+                "question must be at most 1000 characters",
+            ));
+        }
+
+        let rounds = if req.rounds == 0 { 2 } else { req.rounds };
+        let min_participants = if req.min_participants == 0 {
+            3
+        } else {
+            req.min_participants
+        };
+        let join_timeout_secs = if req.join_timeout_seconds == 0 {
+            60
+        } else {
+            req.join_timeout_seconds
+        };
+        let turn_timeout_secs = if req.turn_timeout_seconds == 0 {
+            120
+        } else {
+            req.turn_timeout_seconds
+        };
+
+        let config = SessionConfig {
+            rounds,
+            min_participants,
+            join_timeout: Duration::from_secs(join_timeout_secs as u64),
+            turn_timeout: Duration::from_secs(turn_timeout_secs as u64),
+        };
+        config
+            .validate()
+            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let session = Session::new(session_id.clone(), req.question.clone(), rounds);
+        let (version_tx, _) = watch::channel(0u64);
+
+        let state = Arc::new(SessionState {
+            session: RwLock::new(session),
+            version_tx,
+            config,
+        });
+
+        self.store.insert(session_id.clone(), state.clone()).await;
+        spawn_lobby_timeout(state);
+
+        eprintln!("Session created: {} — \"{}\"", session_id, req.question);
+
+        Ok(Response::new(CreateSessionResponse { session_id }))
+    }
+
+    async fn get_session(
+        &self,
+        request: Request<GetSessionRequest>,
+    ) -> Result<Response<GetSessionResponse>, Status> {
+        let req = request.into_inner();
+        let state = self.store.get(&req.session_id).await?;
+        let session = state.session.read().await;
+
+        Ok(Response::new(GetSessionResponse {
+            session_id: session.id.clone(),
+            question: session.question.clone(),
+            status: proto_session_status(&session.status),
+            participants: session.participant_names(),
+            current_round: session.current_round,
+            total_rounds: session.total_rounds,
+        }))
+    }
+
+    async fn list_sessions(
+        &self,
+        _request: Request<ListSessionsRequest>,
+    ) -> Result<Response<ListSessionsResponse>, Status> {
+        let entries = self.store.list().await;
+        let mut sessions = Vec::with_capacity(entries.len());
+
+        for (_id, state) in entries {
+            let session = state.session.read().await;
+            sessions.push(SessionSummary {
+                session_id: session.id.clone(),
+                question: session.question.clone(),
+                status: proto_session_status(&session.status),
+                participant_count: session.participants.len() as u32,
+            });
+        }
+
+        Ok(Response::new(ListSessionsResponse { sessions }))
+    }
+
     async fn join(&self, request: Request<JoinRequest>) -> Result<Response<JoinResponse>, Status> {
         let req = request.into_inner();
 
@@ -160,8 +281,12 @@ impl Council for CouncilService {
                 "name must be at most 100 characters",
             ));
         }
+        if req.session_id.trim().is_empty() {
+            return Err(Status::invalid_argument("session_id is required"));
+        }
 
-        let mut session = self.shared.session.write().await;
+        let state = self.store.get(&req.session_id).await?;
+        let mut session = state.session.write().await;
 
         if session.status != SessionStatus::LobbyOpen {
             return Err(Status::failed_precondition("lobby is closed"));
@@ -185,12 +310,12 @@ impl Council for CouncilService {
             participants: session.participant_names(),
             status: proto_session_status(&session.status),
             rounds: session.total_rounds,
-            min_participants: self.config.min_participants,
+            min_participants: state.config.min_participants,
             participant_token: token,
         };
 
         // Check if we should start
-        if session.participants.len() as u32 >= self.config.min_participants {
+        if session.participants.len() as u32 >= state.config.min_participants {
             eprintln!(
                 "Min participants reached ({}). Starting discussion.",
                 session.participants.len()
@@ -198,12 +323,13 @@ impl Council for CouncilService {
             session.start_discussion();
             let round = session.current_round;
             let idx = session.current_speaker_idx;
+            let turn_timeout = state.config.turn_timeout;
             drop(session);
-            self.notify_state_change();
-            spawn_turn_timeout(self.shared.clone(), self.config.turn_timeout, round, idx);
+            state.version_tx.send_modify(|v| *v += 1);
+            spawn_turn_timeout(state, turn_timeout, round, idx);
         } else {
             drop(session);
-            self.notify_state_change();
+            state.version_tx.send_modify(|v| *v += 1);
         }
 
         Ok(Response::new(response))
@@ -211,6 +337,8 @@ impl Council for CouncilService {
 
     async fn wait(&self, request: Request<WaitRequest>) -> Result<Response<WaitResponse>, Status> {
         let req = request.into_inner();
+        let state = self.store.get(&req.session_id).await?;
+
         let timeout_secs = if req.timeout_seconds > 0 {
             req.timeout_seconds
         } else {
@@ -218,15 +346,14 @@ impl Council for CouncilService {
         };
         let timeout = Duration::from_secs(timeout_secs as u64);
 
-        let result = tokio::time::timeout(timeout, self.wait_for_actionable(&req)).await;
+        let result = tokio::time::timeout(timeout, wait_for_actionable(&state, &req)).await;
 
         match result {
             Ok(response) => response,
             Err(_) => {
                 // Timeout - return current status
-                let session = self.shared.session.read().await;
-                Self::validate_session_id(&session, &req.session_id)?;
-                Self::validate_token(&session, &req.name, &req.participant_token)?;
+                let session = state.session.read().await;
+                validate_token(&session, &req.name, &req.participant_token)?;
                 Ok(Response::new(build_wait_response(&session, &req.name)))
             }
         }
@@ -253,9 +380,9 @@ impl Council for CouncilService {
             return Err(Status::invalid_argument("concerns must have 0-5 items"));
         }
 
-        let mut session = self.shared.session.write().await;
-        Self::validate_session_id(&session, &req.session_id)?;
-        Self::validate_token(&session, &req.name, &req.participant_token)?;
+        let state = self.store.get(&req.session_id).await?;
+        let mut session = state.session.write().await;
+        validate_token(&session, &req.name, &req.participant_token)?;
 
         if session.status != SessionStatus::InProgress {
             return Err(Status::failed_precondition("not in discussion phase"));
@@ -296,11 +423,12 @@ impl Council for CouncilService {
         let round = session.current_round;
         let idx = session.current_speaker_idx;
         let in_progress = session.status == SessionStatus::InProgress;
+        let turn_timeout = state.config.turn_timeout;
         drop(session);
 
-        self.notify_state_change();
+        state.version_tx.send_modify(|v| *v += 1);
         if in_progress {
-            spawn_turn_timeout(self.shared.clone(), self.config.turn_timeout, round, idx);
+            spawn_turn_timeout(state, turn_timeout, round, idx);
         }
 
         Ok(Response::new(RespondResponse {
@@ -327,9 +455,9 @@ impl Council for CouncilService {
             _ => return Err(Status::invalid_argument("choice must be YAY or NAY")),
         };
 
-        let mut session = self.shared.session.write().await;
-        Self::validate_session_id(&session, &req.session_id)?;
-        Self::validate_token(&session, &req.name, &req.participant_token)?;
+        let state = self.store.get(&req.session_id).await?;
+        let mut session = state.session.write().await;
+        validate_token(&session, &req.name, &req.participant_token)?;
 
         if session.status != SessionStatus::Voting {
             return Err(Status::failed_precondition("not in voting phase"));
@@ -363,7 +491,7 @@ impl Council for CouncilService {
         };
 
         drop(session);
-        self.notify_state_change();
+        state.version_tx.send_modify(|v| *v += 1);
 
         // Best-effort report save (outside write lock to avoid blocking)
         if let Some(ref completed_session) = completed {
@@ -383,8 +511,8 @@ impl Council for CouncilService {
         request: Request<ResultsRequest>,
     ) -> Result<Response<ResultsResponse>, Status> {
         let req = request.into_inner();
-        let session = self.shared.session.read().await;
-        Self::validate_session_id(&session, &req.session_id)?;
+        let state = self.store.get(&req.session_id).await?;
+        let session = state.session.read().await;
 
         if session.status != SessionStatus::Completed {
             return Err(Status::failed_precondition("session not completed"));

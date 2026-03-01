@@ -14,11 +14,51 @@ pub async fn connect(addr: &str) -> Result<CouncilClient<Channel>, CliError> {
     Ok(client)
 }
 
-pub async fn join(addr: &str, name: &str) -> Result<JoinResponse, CliError> {
+pub async fn create_session(
+    addr: &str,
+    question: &str,
+    rounds: u32,
+    min_participants: u32,
+    join_timeout_seconds: u32,
+    turn_timeout_seconds: u32,
+) -> Result<CreateSessionResponse, CliError> {
+    let mut client = connect(addr).await?;
+    let response = client
+        .create_session(CreateSessionRequest {
+            question: question.to_string(),
+            rounds,
+            min_participants,
+            join_timeout_seconds,
+            turn_timeout_seconds,
+        })
+        .await?;
+    Ok(response.into_inner())
+}
+
+pub async fn get_session(addr: &str, session_id: &str) -> Result<GetSessionResponse, CliError> {
+    let mut client = connect(addr).await?;
+    let response = client
+        .get_session(GetSessionRequest {
+            session_id: session_id.to_string(),
+        })
+        .await?;
+    Ok(response.into_inner())
+}
+
+pub async fn list_sessions(addr: &str) -> Result<ListSessionsResponse, CliError> {
+    let mut client = connect(addr).await?;
+    let response = client
+        .list_sessions(ListSessionsRequest {})
+        .await?;
+    Ok(response.into_inner())
+}
+
+pub async fn join(addr: &str, name: &str, session_id: &str) -> Result<JoinResponse, CliError> {
     let mut client = connect(addr).await?;
     let response = client
         .join(JoinRequest {
             name: name.to_string(),
+            session_id: session_id.to_string(),
         })
         .await?;
     Ok(response.into_inner())

@@ -189,7 +189,12 @@ async fn main() {
             position,
             reasoning,
             concerns,
-        } => run_respond(&addr, &session, &name, &token, &position, reasoning, concerns).await,
+        } => {
+            run_respond(
+                &addr, &session, &name, &token, &position, reasoning, concerns,
+            )
+            .await
+        }
         Commands::Vote {
             addr,
             session,
@@ -247,8 +252,7 @@ async fn run_respond(
     reasoning: Vec<String>,
     concerns: Vec<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let resp =
-        client::respond(addr, session, name, token, position, reasoning, concerns).await?;
+    let resp = client::respond(addr, session, name, token, position, reasoning, concerns).await?;
     println!("accepted: {}", resp.accepted);
     println!("next_step: {}", resp.next_step);
     Ok(())
@@ -268,10 +272,7 @@ async fn run_vote(
     Ok(())
 }
 
-async fn run_results(
-    addr: &str,
-    session: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_results(addr: &str, session: &str) -> Result<(), Box<dyn std::error::Error>> {
     let resp = client::results(addr, session).await?;
     let outcome = match resp.outcome {
         x if x == council_proto::Outcome::Approved as i32 => "APPROVED",

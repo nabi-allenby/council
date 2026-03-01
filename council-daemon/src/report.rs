@@ -190,8 +190,7 @@ pub fn save_report(session: &Session, logs_dir: &Path) -> Result<PathBuf, Daemon
     let path = logs_dir.join(filename);
 
     let report = generate_report(session);
-    fs::write(&path, report)
-        .map_err(|e| DaemonError::Io(format!("Cannot write report: {}", e)))?;
+    fs::write(&path, report).map_err(|e| DaemonError::Io(format!("Cannot write report: {}", e)))?;
 
     Ok(path)
 }

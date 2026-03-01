@@ -43,6 +43,7 @@ impl CouncilService {
         self.shared.version_tx.send_modify(|v| *v += 1);
     }
 
+    #[allow(clippy::result_large_err)]
     fn validate_token(session: &Session, name: &str, token: &str) -> Result<(), Status> {
         match session.participants.iter().find(|p| p.name == name) {
             Some(p) if p.token == token => Ok(()),
@@ -114,10 +115,7 @@ fn spawn_turn_timeout(
             && session.current_round == expected_round
             && session.current_speaker_idx == expected_idx
         {
-            let speaker = session
-                .current_speaker()
-                .unwrap_or("unknown")
-                .to_string();
+            let speaker = session.current_speaker().unwrap_or("unknown").to_string();
             eprintln!("Turn timeout: skipping {}", speaker);
             session.advance_speaker();
             let round = session.current_round;
@@ -134,10 +132,7 @@ fn spawn_turn_timeout(
 
 #[tonic::async_trait]
 impl Council for CouncilService {
-    async fn join(
-        &self,
-        request: Request<JoinRequest>,
-    ) -> Result<Response<JoinResponse>, Status> {
+    async fn join(&self, request: Request<JoinRequest>) -> Result<Response<JoinResponse>, Status> {
         let req = request.into_inner();
 
         if req.name.trim().is_empty() {
@@ -183,12 +178,7 @@ impl Council for CouncilService {
             let idx = session.current_speaker_idx;
             drop(session);
             self.notify_state_change();
-            spawn_turn_timeout(
-                self.shared.clone(),
-                self.config.turn_timeout,
-                round,
-                idx,
-            );
+            spawn_turn_timeout(self.shared.clone(), self.config.turn_timeout, round, idx);
         } else {
             drop(session);
             self.notify_state_change();
@@ -197,10 +187,7 @@ impl Council for CouncilService {
         Ok(Response::new(response))
     }
 
-    async fn wait(
-        &self,
-        request: Request<WaitRequest>,
-    ) -> Result<Response<WaitResponse>, Status> {
+    async fn wait(&self, request: Request<WaitRequest>) -> Result<Response<WaitResponse>, Status> {
         let req = request.into_inner();
         let timeout_secs = if req.timeout_seconds > 0 {
             req.timeout_seconds
@@ -237,14 +224,10 @@ impl Council for CouncilService {
             ));
         }
         if req.reasoning.is_empty() || req.reasoning.len() > 5 {
-            return Err(Status::invalid_argument(
-                "reasoning must have 1-5 items",
-            ));
+            return Err(Status::invalid_argument("reasoning must have 1-5 items"));
         }
         if req.concerns.len() > 5 {
-            return Err(Status::invalid_argument(
-                "concerns must have 0-5 items",
-            ));
+            return Err(Status::invalid_argument("concerns must have 0-5 items"));
         }
 
         let mut session = self.shared.session.write().await;
@@ -302,10 +285,7 @@ impl Council for CouncilService {
         }))
     }
 
-    async fn vote(
-        &self,
-        request: Request<VoteRequest>,
-    ) -> Result<Response<VoteResponse>, Status> {
+    async fn vote(&self, request: Request<VoteRequest>) -> Result<Response<VoteResponse>, Status> {
         let req = request.into_inner();
 
         if req.reason.trim().is_empty() {
@@ -351,12 +331,7 @@ impl Council for CouncilService {
                 .filter(|v| v.choice == VoteChoice::Yay)
                 .count();
             let nays = session.votes.len() - yays;
-            eprintln!(
-                "Session complete: {} ({}-{})",
-                outcome.upper(),
-                yays,
-                nays
-            );
+            eprintln!("Session complete: {} ({}-{})", outcome.upper(), yays, nays);
 
             // Best-effort report save
             if let Err(e) = crate::report::save_report(&session, Path::new("logs")) {

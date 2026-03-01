@@ -165,7 +165,11 @@ impl Session {
                 parts.push(format!("## Round {}", turn.round));
             }
 
-            let mut entry = format!("### {} (Round {})", title_case(&turn.participant), turn.round);
+            let mut entry = format!(
+                "### {} (Round {})",
+                title_case(&turn.participant),
+                turn.round
+            );
             entry += &format!("\n\n**Position:** {}", turn.position);
             if !turn.reasoning.is_empty() {
                 for r in &turn.reasoning {

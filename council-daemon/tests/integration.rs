@@ -142,7 +142,14 @@ async fn test_full_session_3_participants() {
     // Bob's turn
     let w = wait_for_status(&mut c2, &sid, "Bob", &t2, 5).await;
     assert_eq!(w.status, WaitStatus::YourTurn as i32);
-    respond(&mut c2, &sid, "Bob", &t2, "Adopt Rust for new services only").await;
+    respond(
+        &mut c2,
+        &sid,
+        "Bob",
+        &t2,
+        "Adopt Rust for new services only",
+    )
+    .await;
 
     // Carol's turn
     let w = wait_for_status(&mut c3, &sid, "Carol", &t3, 5).await;
@@ -153,7 +160,15 @@ async fn test_full_session_3_participants() {
     let w = wait_for_status(&mut c1, &sid, "Alice", &t1, 5).await;
     assert_eq!(w.status, WaitStatus::VotePhase as i32);
 
-    vote(&mut c1, &sid, "Alice", &t1, VoteChoice::Yay, "Rust is safer").await;
+    vote(
+        &mut c1,
+        &sid,
+        "Alice",
+        &t1,
+        VoteChoice::Yay,
+        "Rust is safer",
+    )
+    .await;
     vote(
         &mut c2,
         &sid,
@@ -353,23 +368,20 @@ async fn test_concurrent_clients_no_deadlock() {
     let sid_c = sid.clone();
     let t1_c = t1.clone();
     let mut c1_clone = c1.clone();
-    let h1 = tokio::spawn(async move {
-        wait_for_status(&mut c1_clone, &sid_c, "P1", &t1_c, 10).await
-    });
+    let h1 =
+        tokio::spawn(async move { wait_for_status(&mut c1_clone, &sid_c, "P1", &t1_c, 10).await });
 
     let sid_c = sid.clone();
     let t2_c = t2.clone();
     let mut c2_clone = c2.clone();
-    let h2 = tokio::spawn(async move {
-        wait_for_status(&mut c2_clone, &sid_c, "P2", &t2_c, 10).await
-    });
+    let h2 =
+        tokio::spawn(async move { wait_for_status(&mut c2_clone, &sid_c, "P2", &t2_c, 10).await });
 
     let sid_c = sid.clone();
     let t3_c = t3.clone();
     let mut c3_clone = c3.clone();
-    let h3 = tokio::spawn(async move {
-        wait_for_status(&mut c3_clone, &sid_c, "P3", &t3_c, 10).await
-    });
+    let h3 =
+        tokio::spawn(async move { wait_for_status(&mut c3_clone, &sid_c, "P3", &t3_c, 10).await });
 
     // P1 should get your_turn first
     let w1 = h1.await.unwrap();
@@ -440,10 +452,7 @@ async fn test_invalid_token_rejected() {
         .await;
 
     assert!(result.is_err());
-    assert_eq!(
-        result.unwrap_err().code(),
-        tonic::Code::PermissionDenied
-    );
+    assert_eq!(result.unwrap_err().code(), tonic::Code::PermissionDenied);
 }
 
 // ── Join after lobby closed rejected ──
@@ -466,10 +475,7 @@ async fn test_join_after_lobby_closed_rejected() {
         .await;
 
     assert!(result.is_err());
-    assert_eq!(
-        result.unwrap_err().code(),
-        tonic::Code::FailedPrecondition
-    );
+    assert_eq!(result.unwrap_err().code(), tonic::Code::FailedPrecondition);
 }
 
 // ── Double vote rejected ──

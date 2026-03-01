@@ -324,6 +324,7 @@ impl Default for DaemonAddr {
     }
 }
 
+// Keep in sync with council-daemon/src/daemon_config.rs defaults.
 fn default_host() -> String {
     "[::1]".to_string()
 }
@@ -384,20 +385,20 @@ pub async fn cli_main() {
             follow,
             allow_nesting,
         } => {
-            run_create(
-                &addr,
-                &question,
+            run_create(CreateParams {
+                addr: &addr,
+                question: &question,
                 participants,
                 hook,
                 agents_dir,
-                &config.agent.command,
+                agent_command: &config.agent.command,
                 rounds,
                 min_participants,
                 join_timeout,
                 turn_timeout,
                 follow,
                 allow_nesting,
-            )
+            })
             .await
         }
         Commands::List => run_list(&addr).await,
@@ -443,21 +444,37 @@ pub async fn cli_main() {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn run_create(
-    addr: &str,
-    question: &str,
+struct CreateParams<'a> {
+    addr: &'a str,
+    question: &'a str,
     participants: Vec<String>,
     hook: Option<PathBuf>,
     agents_dir: Option<PathBuf>,
-    agent_command: &str,
+    agent_command: &'a str,
     rounds: u32,
     min_participants: Option<u32>,
     join_timeout: u32,
     turn_timeout: u32,
     follow: bool,
     allow_nesting: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+}
+
+async fn run_create(params: CreateParams<'_>) -> Result<(), Box<dyn std::error::Error>> {
+    let CreateParams {
+        addr,
+        question,
+        participants,
+        hook,
+        agents_dir,
+        agent_command,
+        rounds,
+        min_participants,
+        join_timeout,
+        turn_timeout,
+        follow,
+        allow_nesting,
+    } = params;
+
     let hook = resolve_hook(hook)?;
     // Validate hook exists before calling the daemon
     if !hook.exists() {
@@ -521,8 +538,12 @@ async fn run_create(
         Ok(())
     };
 
-    // Always wait for hook processes, even on error
+    // Kill and reap hook processes. On error or completion, hooks may still
+    // be running (e.g. blocked in a wait call). Send kill signal first, then
+    // wait to avoid leaving orphans.
     for (name, mut child) in children {
+        // Try to kill — ignore errors (process may have already exited)
+        let _ = child.kill().await;
         match child.wait().await {
             Ok(status) if !status.success() => {
                 eprintln!("Warning: hook for {} exited with {}", name, status);

@@ -29,7 +29,8 @@ fi
 # Create temp files once; clean up on exit
 CONV_FILE=$(mktemp)
 VOTE_FILE=$(mktemp)
-trap "rm -f '$CONV_FILE' '$VOTE_FILE'" EXIT
+cleanup() { rm -f "$CONV_FILE" "$VOTE_FILE"; }
+trap cleanup EXIT
 
 # Join the session
 JOIN_OUTPUT=$(council-cli join --addr "$ADDR" --session "$SESSION" --name "$NAME")

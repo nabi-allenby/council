@@ -21,8 +21,8 @@ target
 #.idea/
 
 .env
-logs/*
-logs/
+**/logs/
+.worktree.toml
 .claude
 !.claude/settings.json
 !.claude/hooks/

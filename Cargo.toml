@@ -3,6 +3,5 @@ members = [
     "council-proto",
     "council-daemon",
     "council-cli",
-    "council",
 ]
 resolver = "2"

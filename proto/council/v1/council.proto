@@ -1,0 +1,137 @@
+syntax = "proto3";
+
+package council.v1;
+
+service Council {
+  // Join the session lobby. Returns session info and participant list.
+  rpc Join(JoinRequest) returns (JoinResponse);
+
+  // Long-poll until it is the caller's turn, vote phase starts, or timeout.
+  rpc Wait(WaitRequest) returns (WaitResponse);
+
+  // Submit a discussion response during the caller's turn.
+  rpc Respond(RespondRequest) returns (RespondResponse);
+
+  // Cast a binding vote during the vote phase.
+  rpc Vote(VoteRequest) returns (VoteResponse);
+
+  // Retrieve the final decision record after voting completes.
+  rpc Results(ResultsRequest) returns (ResultsResponse);
+}
+
+// -- Join --
+
+message JoinRequest {
+  string name = 1;  // Participant display name / role
+}
+
+message JoinResponse {
+  string session_id = 1;
+  string question = 2;
+  repeated string participants = 3;
+  SessionStatus status = 4;
+  uint32 rounds = 5;
+  uint32 min_participants = 6;
+  string participant_token = 7;  // Auth token for subsequent RPCs
+}
+
+// -- Wait --
+
+message WaitRequest {
+  string session_id = 1;
+  string name = 2;
+  uint32 timeout_seconds = 3;  // Client-side timeout hint
+  string participant_token = 4;
+}
+
+message WaitResponse {
+  WaitStatus status = 1;
+  uint32 current_round = 2;
+  uint32 total_rounds = 3;
+  string question = 4;
+  string transcript = 5;      // Markdown transcript of discussion so far
+  string current_speaker = 6; // Who is currently speaking (if waiting)
+  repeated string participants = 7;
+}
+
+enum WaitStatus {
+  WAIT_STATUS_UNSPECIFIED = 0;
+  YOUR_TURN = 1;       // It is your turn to respond
+  WAITING = 2;         // Still waiting for your turn
+  VOTE_PHASE = 3;      // Discussion complete, time to vote
+  COMPLETE = 4;        // Session finished, use Results
+  LOBBY = 5;           // Still in lobby, waiting for more participants
+}
+
+enum SessionStatus {
+  SESSION_STATUS_UNSPECIFIED = 0;
+  LOBBY_OPEN = 1;      // Accepting joins
+  IN_PROGRESS = 2;     // Discussion rounds active
+  VOTING = 3;          // Vote phase
+  COMPLETED = 4;       // Session finished
+}
+
+// -- Respond --
+
+message RespondRequest {
+  string session_id = 1;
+  string name = 2;
+  string position = 3;           // One-sentence position (required)
+  repeated string reasoning = 4; // Supporting points (1-5 required)
+  repeated string concerns = 5;  // Outstanding concerns (0-5 optional)
+  string participant_token = 6;
+}
+
+message RespondResponse {
+  bool accepted = 1;
+  string next_step = 2;  // Hint: "wait for next turn" / "wait for vote phase"
+}
+
+// -- Vote --
+
+message VoteRequest {
+  string session_id = 1;
+  string name = 2;
+  VoteChoice choice = 3;
+  string reason = 4;  // 1-2 sentences explaining the vote
+  string participant_token = 5;
+}
+
+enum VoteChoice {
+  VOTE_CHOICE_UNSPECIFIED = 0;
+  YAY = 1;
+  NAY = 2;
+}
+
+message VoteResponse {
+  bool accepted = 1;
+  string message = 2;
+}
+
+// -- Results --
+
+message ResultsRequest {
+  string session_id = 1;
+}
+
+message ResultsResponse {
+  string question = 1;
+  Outcome outcome = 2;
+  uint32 yay_count = 3;
+  uint32 nay_count = 4;
+  repeated VoteRecord votes = 5;
+  string decision_record = 6;   // Formatted markdown decision record
+  string full_report = 7;       // Detailed markdown report
+}
+
+enum Outcome {
+  OUTCOME_UNSPECIFIED = 0;
+  APPROVED = 1;
+  REJECTED = 2;
+}
+
+message VoteRecord {
+  string participant = 1;
+  VoteChoice choice = 2;
+  string reason = 3;
+}

@@ -1,25 +1,19 @@
-use crate::orchestrator::title_case;
-use crate::types::{Session, VoteChoice};
+use crate::types::{title_case, Session, VoteChoice};
 
 pub fn format_decision_record(session: &Session) -> String {
     let outcome = session.outcome();
     let yays: Vec<_> = session
         .votes
         .iter()
-        .filter(|v| v.vote == VoteChoice::Yay)
+        .filter(|v| v.choice == VoteChoice::Yay)
         .collect();
     let nays: Vec<_> = session
         .votes
         .iter()
-        .filter(|v| v.vote == VoteChoice::Nay)
+        .filter(|v| v.choice == VoteChoice::Nay)
         .collect();
 
-    let mut sections = vec![
-        format!("# Council Decision: {}", session.motion()),
-    ];
-    if session.crafted_motion.is_some() {
-        sections.push(format!("*Original question: {}*", session.question));
-    }
+    let mut sections = vec![format!("# Council Decision: {}", session.question)];
     sections.push(format!(
         "**Outcome: {}** ({}-{})",
         outcome.upper(),
@@ -32,31 +26,33 @@ pub fn format_decision_record(session: &Session) -> String {
         .votes
         .iter()
         .map(|v| {
-            let icon = if v.vote == VoteChoice::Yay {
+            let icon = if v.choice == VoteChoice::Yay {
                 "Y"
             } else {
                 "N"
             };
-            format!("- [{}] **{}**: {}", icon, title_case(&v.agent), v.reason)
+            format!(
+                "- [{}] **{}**: {}",
+                icon,
+                title_case(&v.participant),
+                v.reason
+            )
         })
         .collect();
     sections.push(format!("## Votes\n\n{}", vote_lines.join("\n")));
 
     // Key concerns from final round
     let max_round = session.turns.iter().map(|t| t.round).max().unwrap_or(0);
-    let final_turns: Vec<_> = session
-        .turns
-        .iter()
-        .filter(|t| t.round == max_round)
-        .collect();
     let mut all_concerns = Vec::new();
-    for turn in final_turns {
-        for concern in &turn.parsed.concerns {
-            all_concerns.push(format!(
-                "- **{}**: {}",
-                title_case(&turn.agent),
-                concern
-            ));
+    for turn in &session.turns {
+        if turn.round == max_round {
+            for concern in &turn.concerns {
+                all_concerns.push(format!(
+                    "- **{}**: {}",
+                    title_case(&turn.participant),
+                    concern
+                ));
+            }
         }
     }
     if !all_concerns.is_empty() {

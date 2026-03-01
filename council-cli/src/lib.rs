@@ -118,6 +118,12 @@ enum Commands {
         /// Poll session status and print results when complete
         #[arg(long)]
         follow: bool,
+
+        /// Clear LLM nesting-guard env vars (e.g. CLAUDECODE) before spawning
+        /// hooks. Required when running council from inside an LLM session
+        /// (e.g. Claude Code) so that agent subprocesses don't refuse to start.
+        #[arg(long)]
+        dangerously_allow_nesting: bool,
     },
 
     /// List all sessions on a daemon.
@@ -368,6 +374,7 @@ pub async fn cli_main() {
             join_timeout,
             turn_timeout,
             follow,
+            dangerously_allow_nesting,
         } => {
             run_create(
                 &addr,
@@ -381,6 +388,7 @@ pub async fn cli_main() {
                 join_timeout,
                 turn_timeout,
                 follow,
+                dangerously_allow_nesting,
             )
             .await
         }
@@ -440,6 +448,7 @@ async fn run_create(
     join_timeout: u32,
     turn_timeout: u32,
     follow: bool,
+    dangerously_allow_nesting: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let hook = resolve_hook(hook)?;
     // Validate hook exists before calling the daemon
@@ -474,11 +483,15 @@ async fn run_create(
             .env("COUNCIL_PARTICIPANT_NAME", name)
             .env("COUNCIL_ADDR", addr)
             .env("COUNCIL_AGENT_COMMAND", agent_command)
-            // Clear nesting-guard vars so LLM CLIs (e.g. claude -p) don't
-            // refuse to run when council-cli is invoked from inside an LLM.
-            .env_remove("CLAUDECODE")
-            .env_remove("CLAUDE_CODE_ENTRYPOINT")
             .stdin(std::process::Stdio::null());
+
+        // Only clear nesting-guard vars when explicitly requested.
+        // Required when running council from inside an LLM session
+        // (e.g. Claude Code invoking claude -p agents).
+        if dangerously_allow_nesting {
+            cmd.env_remove("CLAUDECODE")
+                .env_remove("CLAUDE_CODE_ENTRYPOINT");
+        }
 
         // If --agents-dir given, look for a personality file for this participant
         if let Some(ref dir) = agents_dir {

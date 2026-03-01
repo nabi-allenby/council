@@ -516,3 +516,160 @@ async fn test_double_vote_rejected() {
     assert!(result.is_err());
     assert_eq!(result.unwrap_err().code(), tonic::Code::AlreadyExists);
 }
+
+// ── Turn timeout skips unresponsive participant ──
+
+#[tokio::test]
+async fn test_turn_timeout_skips_participant() {
+    // Use a very short turn timeout (1s)
+    let listener = TcpListener::bind("[::1]:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let url = format!("http://{}", addr);
+
+    let config = DaemonConfig {
+        rounds: 1,
+        min_participants: 2,
+        join_timeout: Duration::from_secs(30),
+        turn_timeout: Duration::from_secs(1),
+    };
+    let service = CouncilService::new("Timeout test?".to_string(), config);
+    service.spawn_lobby_timeout();
+
+    let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+    tokio::spawn(async move {
+        Server::builder()
+            .add_service(CouncilServer::new(service))
+            .serve_with_incoming(incoming)
+            .await
+            .unwrap();
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let mut c1 = CouncilClient::connect(url.clone()).await.unwrap();
+    let mut c2 = CouncilClient::connect(url).await.unwrap();
+
+    let (sid, t1) = join(&mut c1, "Alice").await;
+    let (_, t2) = join(&mut c2, "Bob").await;
+
+    // Alice's turn but she doesn't respond - wait for turn timeout to skip her
+    let w = wait_for_status(&mut c1, &sid, "Alice", &t1, 5).await;
+    assert_eq!(w.status, WaitStatus::YourTurn as i32);
+
+    // Wait for turn timeout to fire (1s + buffer)
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+
+    // Bob should now get his turn (Alice was skipped)
+    let w = wait_for_status(&mut c2, &sid, "Bob", &t2, 5).await;
+    assert_eq!(w.status, WaitStatus::YourTurn as i32);
+    respond(&mut c2, &sid, "Bob", &t2, "Bob's position").await;
+
+    // Vote phase (Alice was skipped, Bob responded - round complete)
+    let w = wait_for_status(&mut c1, &sid, "Alice", &t1, 5).await;
+    assert_eq!(w.status, WaitStatus::VotePhase as i32);
+}
+
+// ── Name too long rejected ──
+
+#[tokio::test]
+async fn test_name_too_long_rejected() {
+    let (_url, mut c1) = start_daemon("Test?", 1, 3, 30).await;
+
+    let long_name = "A".repeat(101);
+    let result = c1.join(JoinRequest { name: long_name }).await;
+
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().code(), tonic::Code::InvalidArgument);
+}
+
+// ── Respond position too long rejected ──
+
+#[tokio::test]
+async fn test_respond_position_too_long_rejected() {
+    let (url, mut c1) = start_daemon("Test?", 1, 2, 30).await;
+    let mut c2 = CouncilClient::connect(url).await.unwrap();
+
+    let (sid, t1) = join(&mut c1, "Alice").await;
+    join(&mut c2, "Bob").await;
+
+    // Alice's turn - submit position > 300 chars
+    let w = wait_for_status(&mut c1, &sid, "Alice", &t1, 5).await;
+    assert_eq!(w.status, WaitStatus::YourTurn as i32);
+
+    let long_position = "X".repeat(301);
+    let result = c1
+        .respond(RespondRequest {
+            session_id: sid.clone(),
+            name: "Alice".to_string(),
+            position: long_position,
+            reasoning: vec!["reason".to_string()],
+            concerns: vec![],
+            participant_token: t1.clone(),
+        })
+        .await;
+
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().code(), tonic::Code::InvalidArgument);
+}
+
+// ── Respond too many reasoning items rejected ──
+
+#[tokio::test]
+async fn test_respond_too_many_reasoning_rejected() {
+    let (url, mut c1) = start_daemon("Test?", 1, 2, 30).await;
+    let mut c2 = CouncilClient::connect(url).await.unwrap();
+
+    let (sid, t1) = join(&mut c1, "Alice").await;
+    join(&mut c2, "Bob").await;
+
+    let w = wait_for_status(&mut c1, &sid, "Alice", &t1, 5).await;
+    assert_eq!(w.status, WaitStatus::YourTurn as i32);
+
+    let result = c1
+        .respond(RespondRequest {
+            session_id: sid.clone(),
+            name: "Alice".to_string(),
+            position: "Valid position".to_string(),
+            reasoning: vec![
+                "1".into(),
+                "2".into(),
+                "3".into(),
+                "4".into(),
+                "5".into(),
+                "6".into(),
+            ],
+            concerns: vec![],
+            participant_token: t1.clone(),
+        })
+        .await;
+
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().code(), tonic::Code::InvalidArgument);
+}
+
+// ── Wrong session_id rejected ──
+
+#[tokio::test]
+async fn test_wrong_session_id_rejected() {
+    let (url, mut c1) = start_daemon("Test?", 1, 2, 30).await;
+    let mut c2 = CouncilClient::connect(url).await.unwrap();
+
+    let (sid, t1) = join(&mut c1, "Alice").await;
+    join(&mut c2, "Bob").await;
+
+    // Try wait with wrong session ID
+    let result = c1
+        .wait(WaitRequest {
+            session_id: "wrong-session-id".to_string(),
+            name: "Alice".to_string(),
+            timeout_seconds: 1,
+            participant_token: t1.clone(),
+        })
+        .await;
+
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().code(), tonic::Code::NotFound);
+
+    // Verify correct session ID still works
+    let w = wait_for_status(&mut c1, &sid, "Alice", &t1, 1).await;
+    assert_eq!(w.status, WaitStatus::YourTurn as i32);
+}

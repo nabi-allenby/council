@@ -44,6 +44,14 @@ impl CouncilService {
     }
 
     #[allow(clippy::result_large_err)]
+    fn validate_session_id(session: &Session, session_id: &str) -> Result<(), Status> {
+        if session_id != session.id {
+            return Err(Status::not_found("unknown session"));
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::result_large_err)]
     fn validate_token(session: &Session, name: &str, token: &str) -> Result<(), Status> {
         match session.participants.iter().find(|p| p.name == name) {
             Some(p) if p.token == token => Ok(()),
@@ -60,7 +68,11 @@ impl CouncilService {
         tokio::spawn(async move {
             tokio::time::sleep(timeout).await;
             let mut session = shared.session.write().await;
-            if session.status == SessionStatus::LobbyOpen && !session.participants.is_empty() {
+            if session.status != SessionStatus::LobbyOpen {
+                // Session already started (min_participants reached before timeout).
+            } else if session.participants.is_empty() {
+                eprintln!("Lobby timeout reached with no participants. Waiting for joins.");
+            } else {
                 eprintln!(
                     "Lobby timeout reached. Starting with {} participant(s).",
                     session.participants.len()
@@ -79,12 +91,17 @@ impl CouncilService {
         &self,
         req: &WaitRequest,
     ) -> Result<Response<WaitResponse>, Status> {
+        // Validate once upfront — session_id and token don't change mid-session.
+        {
+            let session = self.shared.session.read().await;
+            Self::validate_session_id(&session, &req.session_id)?;
+            Self::validate_token(&session, &req.name, &req.participant_token)?;
+        }
+
         let mut rx = self.shared.version_tx.subscribe();
         loop {
             {
                 let session = self.shared.session.read().await;
-                Self::validate_token(&session, &req.name, &req.participant_token)?;
-
                 let response = build_wait_response(&session, &req.name);
                 let status = response.status;
                 if status == WaitStatus::YourTurn as i32
@@ -137,6 +154,11 @@ impl Council for CouncilService {
 
         if req.name.trim().is_empty() {
             return Err(Status::invalid_argument("name is required"));
+        }
+        if req.name.len() > 100 {
+            return Err(Status::invalid_argument(
+                "name must be at most 100 characters",
+            ));
         }
 
         let mut session = self.shared.session.write().await;
@@ -203,6 +225,7 @@ impl Council for CouncilService {
             Err(_) => {
                 // Timeout - return current status
                 let session = self.shared.session.read().await;
+                Self::validate_session_id(&session, &req.session_id)?;
                 Self::validate_token(&session, &req.name, &req.participant_token)?;
                 Ok(Response::new(build_wait_response(&session, &req.name)))
             }
@@ -231,6 +254,7 @@ impl Council for CouncilService {
         }
 
         let mut session = self.shared.session.write().await;
+        Self::validate_session_id(&session, &req.session_id)?;
         Self::validate_token(&session, &req.name, &req.participant_token)?;
 
         if session.status != SessionStatus::InProgress {
@@ -304,6 +328,7 @@ impl Council for CouncilService {
         };
 
         let mut session = self.shared.session.write().await;
+        Self::validate_session_id(&session, &req.session_id)?;
         Self::validate_token(&session, &req.name, &req.participant_token)?;
 
         if session.status != SessionStatus::Voting {
@@ -322,7 +347,7 @@ impl Council for CouncilService {
             reason: req.reason,
         });
 
-        if session.all_voted() {
+        let completed = if session.all_voted() {
             session.status = SessionStatus::Completed;
             let outcome = session.outcome();
             let yays = session
@@ -332,15 +357,20 @@ impl Council for CouncilService {
                 .count();
             let nays = session.votes.len() - yays;
             eprintln!("Session complete: {} ({}-{})", outcome.upper(), yays, nays);
-
-            // Best-effort report save
-            if let Err(e) = crate::report::save_report(&session, Path::new("logs")) {
-                eprintln!("Warning: failed to save report: {}", e);
-            }
-        }
+            Some(session.clone())
+        } else {
+            None
+        };
 
         drop(session);
         self.notify_state_change();
+
+        // Best-effort report save (outside write lock to avoid blocking)
+        if let Some(ref completed_session) = completed {
+            if let Err(e) = crate::report::save_report(completed_session, Path::new("logs")) {
+                eprintln!("Warning: failed to save report: {}", e);
+            }
+        }
 
         Ok(Response::new(VoteResponse {
             accepted: true,
@@ -350,9 +380,11 @@ impl Council for CouncilService {
 
     async fn results(
         &self,
-        _request: Request<ResultsRequest>,
+        request: Request<ResultsRequest>,
     ) -> Result<Response<ResultsResponse>, Status> {
+        let req = request.into_inner();
         let session = self.shared.session.read().await;
+        Self::validate_session_id(&session, &req.session_id)?;
 
         if session.status != SessionStatus::Completed {
             return Err(Status::failed_precondition("session not completed"));

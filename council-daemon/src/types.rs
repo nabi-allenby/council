@@ -139,7 +139,8 @@ impl Session {
         self.current_speaker_idx = 0;
     }
 
-    /// Advance to the next speaker. Returns true if discussion/voting phase changed.
+    /// Advance to the next speaker, wrapping to the next round when all have spoken.
+    /// Transitions to `Voting` when all rounds are complete.
     pub fn advance_speaker(&mut self) {
         self.current_speaker_idx += 1;
         if self.current_speaker_idx >= self.participants.len() {
@@ -149,10 +150,6 @@ impl Session {
                 self.status = SessionStatus::Voting;
             }
         }
-    }
-
-    pub fn rotation(&self) -> Vec<String> {
-        self.participant_names()
     }
 
     pub fn build_transcript(&self) -> String {

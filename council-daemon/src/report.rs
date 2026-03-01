@@ -20,7 +20,7 @@ pub fn generate_report(session: &Session) -> String {
         .filter(|v| v.choice == VoteChoice::Nay)
         .collect();
     let now = Utc::now().format("%Y-%m-%d %H:%M UTC").to_string();
-    let rotation = session.rotation();
+    let rotation = session.participant_names();
 
     let mut lines = vec![
         "# Council Report".to_string(),
@@ -196,8 +196,13 @@ pub fn save_report(session: &Session, logs_dir: &Path) -> Result<PathBuf, Daemon
 }
 
 fn truncate(text: &str, max_len: usize) -> String {
-    if text.len() > max_len {
-        format!("{}...", &text[..max_len - 3])
+    if text.chars().count() > max_len {
+        let end = text
+            .char_indices()
+            .nth(max_len - 3)
+            .map(|(i, _)| i)
+            .unwrap_or(text.len());
+        format!("{}...", &text[..end])
     } else {
         text.to_string()
     }

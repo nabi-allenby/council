@@ -3,6 +3,10 @@ name = "council-cli"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "council_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "council-cli"
 path = "src/main.rs"
@@ -13,3 +17,6 @@ tonic = "0.12"
 prost = "0.13"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time"] }
 clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+dirs = "6"

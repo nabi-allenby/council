@@ -1,0 +1,18 @@
+[package]
+name = "council"
+version = "0.1.0"
+edition = "2021"
+description = "Structured group deliberation via gRPC — daemon and CLI"
+
+[[bin]]
+name = "council-daemon"
+path = "src/bin/council-daemon.rs"
+
+[[bin]]
+name = "council-cli"
+path = "src/bin/council-cli.rs"
+
+[dependencies]
+council-daemon = { path = "../council-daemon" }
+council-cli = { path = "../council-cli" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

@@ -3,6 +3,10 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 /// Daemon configuration stored in config.toml.
+///
+/// Note: the `[agent]` section in config.toml is read by the CLI, not the
+/// daemon. Serde's default behavior ignores unknown TOML keys, so existing
+/// configs with `[agent]` won't break.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DaemonConfig {
     #[serde(default)]

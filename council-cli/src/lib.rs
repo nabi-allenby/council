@@ -89,9 +89,15 @@ enum Commands {
         #[arg(long, value_delimiter = ',')]
         participants: Vec<String>,
 
-        /// Path to hook script to spawn per participant
+        /// Path to hook script to spawn per participant.
+        /// Defaults to ~/.config/council/hooks/hook.sh.
         #[arg(long)]
-        hook: PathBuf,
+        hook: Option<PathBuf>,
+
+        /// Directory containing agent personality files (<name>.md per participant).
+        /// When set, passes COUNCIL_AGENT_FILE=<dir>/<name>.md to the hook.
+        #[arg(long)]
+        agents_dir: Option<PathBuf>,
 
         /// Number of discussion rounds (1-10)
         #[arg(long, default_value_t = 2)]
@@ -239,30 +245,52 @@ enum Commands {
     },
 }
 
-/// Resolve the daemon address: CLI flag > config file > default.
-fn resolve_addr(addr: Option<String>) -> String {
-    if let Some(a) = addr {
-        return a;
-    }
-
-    // Try reading from config file
+/// Load the council config file, returning defaults if missing.
+fn load_config() -> CouncilConfig {
     if let Some(config_dir) = dirs::config_dir() {
         let config_path = config_dir.join("council").join("config.toml");
         if let Ok(content) = std::fs::read_to_string(config_path) {
             if let Ok(config) = toml::from_str::<CouncilConfig>(&content) {
-                return format!("{}:{}", config.daemon.host, config.daemon.port);
+                return config;
             }
         }
     }
-
-    "[::1]:50051".to_string()
+    CouncilConfig::default()
 }
 
-/// Minimal config struct for reading daemon address.
-#[derive(serde::Deserialize)]
+/// Resolve the daemon address: CLI flag > config file > default.
+fn resolve_addr(addr: Option<String>, config: &CouncilConfig) -> String {
+    if let Some(a) = addr {
+        return a;
+    }
+    format!("{}:{}", config.daemon.host, config.daemon.port)
+}
+
+/// Minimal config struct for reading daemon address and agent command.
+#[derive(Default, serde::Deserialize)]
 struct CouncilConfig {
     #[serde(default)]
     daemon: DaemonAddr,
+    #[serde(default)]
+    agent: AgentConfig,
+}
+
+#[derive(serde::Deserialize)]
+struct AgentConfig {
+    #[serde(default = "default_agent_command")]
+    command: String,
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            command: default_agent_command(),
+        }
+    }
+}
+
+fn default_agent_command() -> String {
+    "claude -p".to_string()
 }
 
 #[derive(serde::Deserialize)]
@@ -289,16 +317,52 @@ fn default_port() -> u16 {
     50051
 }
 
+/// Resolve hook path: explicit > ~/.config/council/hooks/hook.sh > error.
+fn resolve_hook(explicit: Option<PathBuf>) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    if let Some(p) = explicit {
+        return Ok(p);
+    }
+
+    if let Some(config_dir) = dirs::config_dir() {
+        let hooks_dir = config_dir.join("council").join("hooks");
+        let hook = hooks_dir.join("hook.sh");
+        if hook.exists() {
+            return Ok(hook);
+        }
+    }
+
+    Err("no hook specified and no default hook found.\n\
+         hint: run `council-daemon setup` to install the default hooks,\n\
+         or pass --hook <path> explicitly."
+        .into())
+}
+
+/// Look for an agent personality file in the given directory.
+/// Tries `<name>.md` first, then lowercase `<name>.md`.
+fn find_agent_file(dir: &std::path::Path, name: &str) -> Option<PathBuf> {
+    let exact = dir.join(format!("{}.md", name));
+    if exact.exists() {
+        return Some(exact);
+    }
+    let lower = dir.join(format!("{}.md", name.to_lowercase()));
+    if lower.exists() {
+        return Some(lower);
+    }
+    None
+}
+
 /// CLI entry point. Parses args and dispatches to the appropriate command.
 pub async fn cli_main() {
     let cli = Cli::parse();
-    let addr = resolve_addr(cli.addr);
+    let config = load_config();
+    let addr = resolve_addr(cli.addr, &config);
 
     let result = match cli.command {
         Commands::Create {
             question,
             participants,
             hook,
+            agents_dir,
             rounds,
             min_participants,
             join_timeout,
@@ -310,6 +374,8 @@ pub async fn cli_main() {
                 &question,
                 participants,
                 hook,
+                agents_dir,
+                &config.agent.command,
                 rounds,
                 min_participants,
                 join_timeout,
@@ -366,13 +432,16 @@ async fn run_create(
     addr: &str,
     question: &str,
     participants: Vec<String>,
-    hook: PathBuf,
+    hook: Option<PathBuf>,
+    agents_dir: Option<PathBuf>,
+    agent_command: &str,
     rounds: u32,
     min_participants: Option<u32>,
     join_timeout: u32,
     turn_timeout: u32,
     follow: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let hook = resolve_hook(hook)?;
     // Validate hook exists before calling the daemon
     if !hook.exists() {
         return Err(format!("hook not found: {}", hook.display()).into());
@@ -400,11 +469,22 @@ async fn run_create(
     let mut children = Vec::new();
     for name in &participants {
         eprintln!("Spawning hook for participant: {}", name);
-        let child = Command::new(&hook)
-            .env("COUNCIL_SESSION_ID", &session_id)
+        let mut cmd = Command::new(&hook);
+        cmd.env("COUNCIL_SESSION_ID", &session_id)
             .env("COUNCIL_PARTICIPANT_NAME", name)
             .env("COUNCIL_ADDR", addr)
-            .stdin(std::process::Stdio::null())
+            .env("COUNCIL_AGENT_COMMAND", agent_command)
+            .stdin(std::process::Stdio::null());
+
+        // If --agents-dir given, look for a personality file for this participant
+        if let Some(ref dir) = agents_dir {
+            if let Some(agent_file) = find_agent_file(dir, name) {
+                eprintln!("  agent file: {}", agent_file.display());
+                cmd.env("COUNCIL_AGENT_FILE", &agent_file);
+            }
+        }
+
+        let child = cmd
             .spawn()
             .map_err(|e| format!("failed to spawn hook for {}: {}", name, e))?;
         children.push((name.clone(), child));

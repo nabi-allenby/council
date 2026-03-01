@@ -1,12 +1,13 @@
 use std::collections::VecDeque;
+use std::fmt::Write as _;
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, IsTerminal, Write};
 use std::process::Command;
 
 use crate::daemon_config::DaemonConfig;
 
+const HOOK_MAIN: &str = include_str!("hooks/hook.sh");
 const HOOK_BASIC: &str = include_str!("hooks/basic.sh");
-const HOOK_CLAUDE: &str = include_str!("hooks/claude.sh");
 
 /// Create config directory, write defaults, install hooks, and start the daemon.
 pub fn run_setup(port: Option<u16>) -> Result<(), Box<dyn std::error::Error>> {
@@ -19,14 +20,15 @@ pub fn run_setup(port: Option<u16>) -> Result<(), Box<dyn std::error::Error>> {
 
     // Write config (preserve existing if present)
     let config_path = DaemonConfig::config_path().ok_or("cannot determine config path")?;
-    let mut config = if config_path.exists() {
+    let is_new_config = !config_path.exists();
+    let mut config = if is_new_config {
+        DaemonConfig::default()
+    } else {
         eprintln!(
             "Config already exists, preserving {}",
             config_path.display()
         );
         DaemonConfig::load()
-    } else {
-        DaemonConfig::default()
     };
 
     // Apply port override if specified
@@ -34,12 +36,22 @@ pub fn run_setup(port: Option<u16>) -> Result<(), Box<dyn std::error::Error>> {
         config.daemon.port = p;
     }
 
-    config.save()?;
+    // For new configs, prompt for LLM agent command first, then write everything
+    // in a single pass. The [agent] section is read by the CLI, not the daemon.
+    if is_new_config {
+        let agent_command = select_agent_command();
+        let mut content = toml::to_string_pretty(&config)?;
+        writeln!(content, "\n[agent]\ncommand = {:?}", agent_command)?;
+        fs::write(&config_path, content)?;
+    } else {
+        config.save()?;
+    }
+
     eprintln!("Wrote {}", config_path.display());
 
     // Install hook scripts (skip if already exist to preserve customizations)
+    install_hook(&hooks_dir, "hook.sh", HOOK_MAIN)?;
     install_hook(&hooks_dir, "basic.sh", HOOK_BASIC)?;
-    install_hook(&hooks_dir, "claude.sh", HOOK_CLAUDE)?;
 
     // Start daemon in background
     start_daemon(&config)?;
@@ -287,4 +299,68 @@ fn set_executable(path: &std::path::Path) -> Result<(), Box<dyn std::error::Erro
 #[cfg(not(unix))]
 fn set_executable(_path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
+}
+
+/// Prompt the user to select their LLM agent command.
+///
+/// In a TTY, shows a numbered menu on stderr and reads from stdin.
+/// In a non-TTY (piped/CI), silently returns the default `"claude -p"`.
+fn select_agent_command() -> String {
+    let default = "claude -p";
+
+    if !std::io::stdin().is_terminal() {
+        return default.to_string();
+    }
+
+    let options = [
+        ("Claude Code", "claude -p"),
+        ("Gemini CLI", "gemini -p"),
+        ("OpenAI Codex", "codex exec -"),
+        ("Ollama", "ollama run <model>"),
+        ("LLM", "llm"),
+    ];
+
+    eprintln!("\nSelect your LLM agent command:");
+    for (i, (name, cmd)) in options.iter().enumerate() {
+        eprintln!("  {}) {:<16} ({})", i + 1, name, cmd);
+    }
+    eprintln!("  {}) Custom", options.len() + 1);
+
+    let choice = read_line_prompt(&format!("Choice [1-{}]: ", options.len() + 1));
+    let choice = choice.trim();
+
+    match choice.parse::<usize>() {
+        Ok(n) if n >= 1 && n <= options.len() => {
+            let (name, cmd) = options[n - 1];
+            if name == "Ollama" {
+                let model = read_line_prompt("Ollama model name [llama3.2]: ");
+                let model = model.trim();
+                let model = if model.is_empty() { "llama3.2" } else { model };
+                return format!("ollama run {}", model);
+            }
+            cmd.to_string()
+        }
+        Ok(n) if n == options.len() + 1 => {
+            let cmd = read_line_prompt("Enter full command: ");
+            let cmd = cmd.trim();
+            if cmd.is_empty() {
+                default.to_string()
+            } else {
+                cmd.to_string()
+            }
+        }
+        _ => {
+            eprintln!("Invalid choice, using default: {}", default);
+            default.to_string()
+        }
+    }
+}
+
+/// Print a prompt to stderr and read a line from stdin.
+fn read_line_prompt(prompt: &str) -> String {
+    eprint!("{}", prompt);
+    let _ = std::io::stderr().flush();
+    let mut buf = String::new();
+    let _ = std::io::stdin().read_line(&mut buf);
+    buf
 }

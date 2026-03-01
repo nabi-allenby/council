@@ -145,7 +145,10 @@ fn spawn_lobby_timeout(state: Arc<SessionState>, store: Arc<SessionStore>) {
         } else if session.participants.is_empty() {
             let id = session.id.clone();
             drop(session);
-            eprintln!("Lobby timeout: no participants joined. Removing session {}.", id);
+            eprintln!(
+                "Lobby timeout: no participants joined. Removing session {}.",
+                id
+            );
             store.remove(&id).await;
         } else {
             eprintln!(

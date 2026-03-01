@@ -433,9 +433,7 @@ async fn follow_session(
             Err(e) => {
                 consecutive_errors += 1;
                 if consecutive_errors >= 5 {
-                    return Err(
-                        format!("lost connection to daemon after 5 retries: {}", e).into(),
-                    );
+                    return Err(format!("lost connection to daemon after 5 retries: {}", e).into());
                 }
                 eprintln!(
                     "Warning: poll failed (attempt {}/5): {}",

@@ -835,7 +835,11 @@ async fn test_list_sessions() {
         .into_inner();
     assert_eq!(resp.sessions.len(), 2);
 
-    let ids: Vec<&str> = resp.sessions.iter().map(|s| s.session_id.as_str()).collect();
+    let ids: Vec<&str> = resp
+        .sessions
+        .iter()
+        .map(|s| s.session_id.as_str())
+        .collect();
     assert!(ids.contains(&sid1.as_str()));
     assert!(ids.contains(&sid2.as_str()));
 
@@ -1046,7 +1050,11 @@ async fn test_session_eviction_at_max_capacity() {
         .await
         .unwrap()
         .into_inner();
-    let listed_ids: Vec<&str> = resp.sessions.iter().map(|s| s.session_id.as_str()).collect();
+    let listed_ids: Vec<&str> = resp
+        .sessions
+        .iter()
+        .map(|s| s.session_id.as_str())
+        .collect();
     // Sessions 1-9 should remain, session 0 was evicted
     for sid in &session_ids[1..] {
         assert!(

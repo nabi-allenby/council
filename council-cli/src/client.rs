@@ -26,9 +26,7 @@ pub async fn get_session(addr: &str, session_id: &str) -> Result<GetSessionRespo
 
 pub async fn list_sessions(addr: &str) -> Result<ListSessionsResponse, CliError> {
     let mut client = connect(addr).await?;
-    let response = client
-        .list_sessions(ListSessionsRequest {})
-        .await?;
+    let response = client.list_sessions(ListSessionsRequest {}).await?;
     Ok(response.into_inner())
 }
 

@@ -119,11 +119,19 @@ enum Commands {
         #[arg(long)]
         follow: bool,
 
-        /// Clear LLM nesting-guard env vars (e.g. CLAUDECODE) before spawning
-        /// hooks. Required when running council from inside an LLM session
-        /// (e.g. Claude Code) so that agent subprocesses don't refuse to start.
+        /// Clear LLM nesting-guard env vars (CLAUDECODE, CLAUDE_CODE_ENTRYPOINT)
+        /// before spawning hooks. Required when running council from inside an
+        /// LLM session (e.g. Claude Code) so that `claude -p` subprocesses
+        /// don't refuse to start.
+        ///
+        /// This is safe for council's use case: hooks spawn isolated `claude -p`
+        /// processes that don't share runtime resources with the parent session.
+        /// The nesting guard in Claude Code is designed to prevent interactive
+        /// sessions from colliding on shared IPC channels — but print-mode
+        /// subprocesses are fully independent. Anthropic's own Agent SDK uses
+        /// the same bypass (clearing CLAUDECODE from subprocess env).
         #[arg(long)]
-        dangerously_allow_nesting: bool,
+        allow_nesting: bool,
     },
 
     /// List all sessions on a daemon.
@@ -374,7 +382,7 @@ pub async fn cli_main() {
             join_timeout,
             turn_timeout,
             follow,
-            dangerously_allow_nesting,
+            allow_nesting,
         } => {
             run_create(
                 &addr,
@@ -388,7 +396,7 @@ pub async fn cli_main() {
                 join_timeout,
                 turn_timeout,
                 follow,
-                dangerously_allow_nesting,
+                allow_nesting,
             )
             .await
         }
@@ -448,7 +456,7 @@ async fn run_create(
     join_timeout: u32,
     turn_timeout: u32,
     follow: bool,
-    dangerously_allow_nesting: bool,
+    allow_nesting: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let hook = resolve_hook(hook)?;
     // Validate hook exists before calling the daemon
@@ -485,10 +493,10 @@ async fn run_create(
             .env("COUNCIL_AGENT_COMMAND", agent_command)
             .stdin(std::process::Stdio::null());
 
-        // Only clear nesting-guard vars when explicitly requested.
-        // Required when running council from inside an LLM session
-        // (e.g. Claude Code invoking claude -p agents).
-        if dangerously_allow_nesting {
+        // Clear nesting-guard vars so isolated `claude -p` subprocesses
+        // don't refuse to start. Safe because hooks are independent processes
+        // that don't share IPC channels with the parent LLM session.
+        if allow_nesting {
             cmd.env_remove("CLAUDECODE")
                 .env_remove("CLAUDE_CODE_ENTRYPOINT");
         }

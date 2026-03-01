@@ -52,22 +52,42 @@ impl SessionStore {
         let mut sessions = self.sessions.write().await;
         let mut order = self.order.write().await;
 
-        // Evict oldest session(s) to stay within the limit
+        // Evict to stay within the limit. Prefer completed sessions first,
+        // then fall back to oldest (FIFO).
         while order.len() >= MAX_SESSIONS {
-            if let Some(old_id) = order.pop_front() {
-                let evicted = sessions.remove(&old_id);
-                if let Some(s) = evicted {
-                    let sess = s.session.read().await;
-                    eprintln!(
-                        "Evicting session {} (status: {:?})",
-                        old_id, sess.status
-                    );
+            // Try to find a completed session to evict
+            let evict_idx = {
+                let mut completed_idx = None;
+                for (i, id) in order.iter().enumerate() {
+                    if let Some(s) = sessions.get(id) {
+                        // try_read avoids deadlock — skip if locked
+                        if let Ok(sess) = s.session.try_read() {
+                            if sess.status == SessionStatus::Completed {
+                                completed_idx = Some(i);
+                                break;
+                            }
+                        }
+                    }
                 }
+                // Fall back to oldest if no completed session found
+                completed_idx.unwrap_or(0)
+            };
+
+            if let Some(old_id) = order.remove(evict_idx) {
+                sessions.remove(&old_id);
+                eprintln!("Evicting session {}", old_id);
             }
         }
 
         order.push_back(session_id.clone());
         sessions.insert(session_id, state);
+    }
+
+    async fn remove(&self, session_id: &str) {
+        let mut sessions = self.sessions.write().await;
+        let mut order = self.order.write().await;
+        sessions.remove(session_id);
+        order.retain(|id| id != session_id);
     }
 
     async fn list(&self) -> Vec<(String, Arc<SessionState>)> {
@@ -106,7 +126,7 @@ fn validate_token(session: &Session, name: &str, token: &str) -> Result<(), Stat
     }
 }
 
-fn spawn_lobby_timeout(state: Arc<SessionState>) {
+fn spawn_lobby_timeout(state: Arc<SessionState>, store: Arc<SessionStore>) {
     let timeout = state.config.join_timeout;
     let turn_timeout = state.config.turn_timeout;
 
@@ -116,7 +136,10 @@ fn spawn_lobby_timeout(state: Arc<SessionState>) {
         if session.status != SessionStatus::LobbyOpen {
             // Session already started (min_participants reached before timeout).
         } else if session.participants.is_empty() {
-            eprintln!("Lobby timeout reached with no participants. Waiting for joins.");
+            let id = session.id.clone();
+            drop(session);
+            eprintln!("Lobby timeout: no participants joined. Removing session {}.", id);
+            store.remove(&id).await;
         } else {
             eprintln!(
                 "Lobby timeout reached. Starting with {} participant(s).",
@@ -245,7 +268,7 @@ impl Council for CouncilService {
         });
 
         self.store.insert(session_id.clone(), state.clone()).await;
-        spawn_lobby_timeout(state);
+        spawn_lobby_timeout(state, self.store.clone());
 
         eprintln!("Session created: {} — \"{}\"", session_id, req.question);
 

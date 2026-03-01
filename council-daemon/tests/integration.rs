@@ -1039,4 +1039,211 @@ async fn test_session_eviction_at_max_capacity() {
         })
         .await;
     assert!(result.is_ok());
+
+    // Verify ListSessions returns exactly the expected 10 sessions
+    let resp = c1
+        .list_sessions(ListSessionsRequest {})
+        .await
+        .unwrap()
+        .into_inner();
+    let listed_ids: Vec<&str> = resp.sessions.iter().map(|s| s.session_id.as_str()).collect();
+    // Sessions 1-9 should remain, session 0 was evicted
+    for sid in &session_ids[1..] {
+        assert!(
+            listed_ids.contains(&sid.as_str()),
+            "Expected session {} to still exist",
+            sid
+        );
+    }
+    assert!(listed_ids.contains(&sid_new.as_str()));
+    assert!(!listed_ids.contains(&session_ids[0].as_str()));
+}
+
+// ── Results on non-completed session rejected ──
+
+#[tokio::test]
+async fn test_results_before_completion_rejected() {
+    let (url, mut c1) = start_daemon().await;
+    let mut c2 = CouncilClient::connect(url).await.unwrap();
+
+    let sid = create_session(&mut c1, "Test?", 1, 2, 30).await;
+    join(&mut c1, "Alice", &sid).await;
+    join(&mut c2, "Bob", &sid).await;
+
+    // Session is InProgress, not Completed
+    let result = c1
+        .results(ResultsRequest {
+            session_id: sid.clone(),
+        })
+        .await;
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().code(), tonic::Code::FailedPrecondition);
+}
+
+// ── Respond with empty reasoning rejected ──
+
+#[tokio::test]
+async fn test_respond_empty_reasoning_rejected() {
+    let (url, mut c1) = start_daemon().await;
+    let mut c2 = CouncilClient::connect(url).await.unwrap();
+
+    let sid = create_session(&mut c1, "Test?", 1, 2, 30).await;
+    let (_, t1) = join(&mut c1, "Alice", &sid).await;
+    join(&mut c2, "Bob", &sid).await;
+
+    let w = wait_for_status(&mut c1, &sid, "Alice", &t1, 5).await;
+    assert_eq!(w.status, WaitStatus::YourTurn as i32);
+
+    let result = c1
+        .respond(RespondRequest {
+            session_id: sid.clone(),
+            name: "Alice".to_string(),
+            position: "Valid position".to_string(),
+            reasoning: vec![], // empty
+            concerns: vec![],
+            participant_token: t1.clone(),
+        })
+        .await;
+
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().code(), tonic::Code::InvalidArgument);
+}
+
+// ── Vote with unspecified choice rejected ──
+
+#[tokio::test]
+async fn test_vote_unspecified_choice_rejected() {
+    let (url, mut c1) = start_daemon().await;
+    let mut c2 = CouncilClient::connect(url).await.unwrap();
+
+    let sid = create_session(&mut c1, "Test?", 1, 2, 30).await;
+    let (_, t1) = join(&mut c1, "Alice", &sid).await;
+    let (_, t2) = join(&mut c2, "Bob", &sid).await;
+
+    // Complete discussion
+    let w = wait_for_status(&mut c1, &sid, "Alice", &t1, 5).await;
+    assert_eq!(w.status, WaitStatus::YourTurn as i32);
+    respond(&mut c1, &sid, "Alice", &t1, "Pos A").await;
+    let w = wait_for_status(&mut c2, &sid, "Bob", &t2, 5).await;
+    assert_eq!(w.status, WaitStatus::YourTurn as i32);
+    respond(&mut c2, &sid, "Bob", &t2, "Pos B").await;
+
+    // Vote phase — send VOTE_CHOICE_UNSPECIFIED (0)
+    let w = wait_for_status(&mut c1, &sid, "Alice", &t1, 5).await;
+    assert_eq!(w.status, WaitStatus::VotePhase as i32);
+
+    let result = c1
+        .vote(VoteRequest {
+            session_id: sid.clone(),
+            name: "Alice".to_string(),
+            choice: 0, // VOTE_CHOICE_UNSPECIFIED
+            reason: "testing invalid choice".to_string(),
+            participant_token: t1.clone(),
+        })
+        .await;
+
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().code(), tonic::Code::InvalidArgument);
+}
+
+// ── Wait timeout returns current status ──
+
+#[tokio::test]
+async fn test_wait_timeout_returns_status() {
+    let (_url, mut c1) = start_daemon().await;
+
+    // Create session but only 1 of 2 required participants joins
+    let sid = create_session(&mut c1, "Timeout test?", 1, 2, 60).await;
+    let (_, t1) = join(&mut c1, "Alice", &sid).await;
+
+    // Wait with a 1-second timeout — should return lobby status, not block
+    let w = wait_for_status(&mut c1, &sid, "Alice", &t1, 1).await;
+    assert_eq!(w.status, WaitStatus::Lobby as i32);
+}
+
+// ── Lobby timeout with zero participants removes session ──
+
+#[tokio::test]
+async fn test_lobby_timeout_zero_participants_removes_session() {
+    let (_url, mut c1) = start_daemon().await;
+
+    // Create session with a 1-second join timeout, but don't join anyone
+    let resp = c1
+        .create_session(CreateSessionRequest {
+            question: "Ghost session?".to_string(),
+            rounds: 1,
+            min_participants: 2,
+            join_timeout_seconds: 1,
+            turn_timeout_seconds: 120,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let sid = resp.session_id;
+
+    // Session exists right after creation
+    let result = c1
+        .get_session(GetSessionRequest {
+            session_id: sid.clone(),
+        })
+        .await;
+    assert!(result.is_ok());
+
+    // Wait for lobby timeout to fire and clean up (1s + buffer)
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+
+    // Session should have been removed
+    let result = c1
+        .get_session(GetSessionRequest {
+            session_id: sid.clone(),
+        })
+        .await;
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().code(), tonic::Code::NotFound);
+}
+
+// ── Config upper bounds validation ──
+
+#[tokio::test]
+async fn test_create_session_config_upper_bounds() {
+    let (_url, mut c1) = start_daemon().await;
+
+    // min_participants too high
+    let result = c1
+        .create_session(CreateSessionRequest {
+            question: "Test?".to_string(),
+            rounds: 1,
+            min_participants: 51,
+            join_timeout_seconds: 30,
+            turn_timeout_seconds: 120,
+        })
+        .await;
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().code(), tonic::Code::InvalidArgument);
+
+    // join_timeout too high
+    let result = c1
+        .create_session(CreateSessionRequest {
+            question: "Test?".to_string(),
+            rounds: 1,
+            min_participants: 2,
+            join_timeout_seconds: 3601,
+            turn_timeout_seconds: 120,
+        })
+        .await;
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().code(), tonic::Code::InvalidArgument);
+
+    // turn_timeout too high
+    let result = c1
+        .create_session(CreateSessionRequest {
+            question: "Test?".to_string(),
+            rounds: 1,
+            min_participants: 2,
+            join_timeout_seconds: 30,
+            turn_timeout_seconds: 3601,
+        })
+        .await;
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().code(), tonic::Code::InvalidArgument);
 }

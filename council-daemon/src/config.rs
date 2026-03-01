@@ -17,9 +17,19 @@ impl SessionConfig {
                 "rounds must be between 1 and 10".to_string(),
             ));
         }
-        if self.min_participants == 0 {
+        if self.min_participants == 0 || self.min_participants > 50 {
             return Err(DaemonError::Config(
-                "min-participants must be at least 1".to_string(),
+                "min-participants must be between 1 and 50".to_string(),
+            ));
+        }
+        if self.join_timeout.as_secs() > 3600 {
+            return Err(DaemonError::Config(
+                "join-timeout must be at most 3600 seconds".to_string(),
+            ));
+        }
+        if self.turn_timeout.as_secs() > 3600 {
+            return Err(DaemonError::Config(
+                "turn-timeout must be at most 3600 seconds".to_string(),
             ));
         }
         Ok(())

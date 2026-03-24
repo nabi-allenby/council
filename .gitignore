@@ -26,6 +26,14 @@ target
 .claude
 !.claude/settings.json
 !.claude/hooks/
+# ruflo: runtime state (data, sessions, metrics, learning)
+.claude-flow/data/
+.claude-flow/sessions/
+.claude-flow/metrics/
+.claude-flow/learning/
+.claude-flow/logs/
+.swarm/
+node_modules/
 # Squad: ignore runtime state (logs, inbox, sessions)
 .squad/orchestration-log/
 .squad/log/

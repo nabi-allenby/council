@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "agents": {
+    "kai": {
+      "name": "Kai",
+      "role": "lead",
+      "created": "2026-03-24"
+    },
+    "nova": {
+      "name": "Nova",
+      "role": "backend",
+      "created": "2026-03-24"
+    },
+    "jax": {
+      "name": "Jax",
+      "role": "tester",
+      "created": "2026-03-24"
+    },
+    "scribe": {
+      "name": "Scribe",
+      "role": "scribe",
+      "created": "2026-03-24"
+    },
+    "ralph": {
+      "name": "Ralph",
+      "role": "ralph",
+      "created": "2026-03-24"
+    }
+  }
+}

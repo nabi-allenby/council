@@ -1,5 +1,11 @@
 # Council
 
+
+## Archive notice:
+This Repo have been superseded by https://github.com/karpathy/llm-council
+and will be archive, until next time :)
+
+## Description
 A turn-based deliberation system where AI agents with distinct personalities discuss a question across rounds, then cast binding votes.
 
 Five default roles — Architect, Sentinel, Steward, Mediator, Firebrand — each with unique reasoning styles, blind spots, and interpersonal dynamics.
